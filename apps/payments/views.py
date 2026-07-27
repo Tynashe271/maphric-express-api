@@ -93,3 +93,16 @@ class PaymentCallbackView(APIView):
         # Payment state is independently verified through Paynow's signed poll
         # URL before an order is marked paid.
         return Response({'received': True})
+
+
+class PaymentConfigView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        keys = (
+            'PAYNOW_INTEGRATION_ID',
+            'PAYNOW_INTEGRATION_KEY',
+            'PAYNOW_RETURN_URL',
+            'PAYNOW_RESULT_URL',
+        )
+        return Response({key: bool(os.getenv(key, '').strip()) for key in keys})
