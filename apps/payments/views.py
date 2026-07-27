@@ -23,6 +23,15 @@ class InitiatePaymentView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
+        try:
+            return self._initiate(request)
+        except Exception as exc:
+            return Response(
+                {'detail': f'EcoCash setup error: {type(exc).__name__}: {exc}'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+    def _initiate(self, request):
         order = Order.objects.filter(pk=request.data.get('order_id'), user=request.user).first()
         if not order:
             return Response({'detail': 'Order not found.'}, status=status.HTTP_404_NOT_FOUND)
@@ -41,11 +50,14 @@ class InitiatePaymentView(APIView):
             response = paynow.send_mobile(payment, phone, 'ecocash')
         except Exception as exc:
             return Response({'detail': f'EcoCash could not be contacted: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
-        if not response.success:
+        if not getattr(response, 'success', False):
             return Response({'detail': getattr(response, 'error', None) or 'EcoCash rejected the payment request.'}, status=status.HTTP_400_BAD_REQUEST)
+        poll_url = getattr(response, 'poll_url', '')
+        if not poll_url:
+            return Response({'detail': 'Paynow accepted the request but did not return a payment status URL.'}, status=status.HTTP_502_BAD_GATEWAY)
         order.payment_method = 'EcoCash'
         order.payment_status = 'pending'
-        order.paynow_poll_url = response.poll_url
+        order.paynow_poll_url = poll_url
         order.save(update_fields=['payment_method', 'payment_status', 'paynow_poll_url', 'updated_at'])
         return Response({'paid': False, 'status': 'pending', 'message': 'Approve the EcoCash prompt on your phone.'})
 
