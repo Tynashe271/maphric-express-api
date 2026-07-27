@@ -32,7 +32,8 @@ class InitiatePaymentView(APIView):
             )
 
     def _initiate(self, request):
-        order = Order.objects.filter(pk=request.data.get('order_id'), user=request.user).first()
+        orders = Order.objects.all() if request.user.is_staff else Order.objects.filter(user=request.user)
+        order = orders.filter(pk=request.data.get('order_id')).first()
         if not order:
             return Response({'detail': 'Order not found.'}, status=status.HTTP_404_NOT_FOUND)
         if order.payment_status == 'paid':
