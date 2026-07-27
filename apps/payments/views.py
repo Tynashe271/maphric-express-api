@@ -1,0 +1,83 @@
+import os
+from paynow import Paynow
+from rest_framework import permissions, status
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from apps.orders.models import Order
+
+
+def gateway():
+    integration_id = os.getenv('PAYNOW_INTEGRATION_ID', '').strip()
+    integration_key = os.getenv('PAYNOW_INTEGRATION_KEY', '').strip()
+    if not integration_id or not integration_key:
+        raise RuntimeError('EcoCash merchant payments are not configured.')
+    return Paynow(
+        integration_id,
+        integration_key,
+        os.getenv('PAYNOW_RETURN_URL', ''),
+        os.getenv('PAYNOW_RESULT_URL', ''),
+    )
+
+
+class InitiatePaymentView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        order = Order.objects.filter(pk=request.data.get('order_id'), user=request.user).first()
+        if not order:
+            return Response({'detail': 'Order not found.'}, status=status.HTTP_404_NOT_FOUND)
+        if order.payment_status == 'paid':
+            return Response({'paid': True, 'status': 'paid'})
+        method = str(request.data.get('method', '')).lower()
+        if method != 'ecocash':
+            return Response({'detail': 'This endpoint currently accepts EcoCash payments.'}, status=status.HTTP_400_BAD_REQUEST)
+        phone = ''.join(c for c in str(request.data.get('phone', '')) if c.isdigit() or c == '+')
+        if not phone:
+            return Response({'detail': 'Enter the EcoCash phone number.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            paynow = gateway()
+            payment = paynow.create_payment(f'MAP-{order.id:06d}', request.user.email)
+            payment.add(f'Maphric Express order MAP-{order.id:06d}', float(order.total))
+            response = paynow.send_mobile(payment, phone, 'ecocash')
+        except Exception as exc:
+            return Response({'detail': f'EcoCash could not be contacted: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+        if not response.success:
+            return Response({'detail': getattr(response, 'error', None) or 'EcoCash rejected the payment request.'}, status=status.HTTP_400_BAD_REQUEST)
+        order.payment_method = 'EcoCash'
+        order.payment_status = 'pending'
+        order.paynow_poll_url = response.poll_url
+        order.save(update_fields=['payment_method', 'payment_status', 'paynow_poll_url', 'updated_at'])
+        return Response({'paid': False, 'status': 'pending', 'message': 'Approve the EcoCash prompt on your phone.'})
+
+
+class PaymentStatusView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, order_id):
+        order = Order.objects.filter(pk=order_id, user=request.user).first()
+        if not order:
+            return Response({'detail': 'Order not found.'}, status=status.HTTP_404_NOT_FOUND)
+        if order.payment_status == 'paid':
+            return Response({'paid': True, 'status': 'paid'})
+        if not order.paynow_poll_url:
+            return Response({'paid': False, 'status': order.payment_status})
+        try:
+            payment_status = gateway().check_transaction_status(order.paynow_poll_url)
+        except Exception as exc:
+            return Response({'detail': f'Payment status could not be checked: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+        if payment_status.paid:
+            order.payment_status = 'paid'
+            order.status = Order.Status.PAID
+            order.paynow_reference = getattr(payment_status, 'paynow_reference', '') or ''
+            order.save(update_fields=['payment_status', 'status', 'paynow_reference', 'updated_at'])
+        return Response({'paid': bool(payment_status.paid), 'status': payment_status.status})
+
+
+class PaymentCallbackView(APIView):
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        # Payment state is independently verified through Paynow's signed poll
+        # URL before an order is marked paid.
+        return Response({'received': True})

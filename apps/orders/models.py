@@ -18,6 +18,10 @@ class Order(models.Model):
     shipping_name = models.CharField(max_length=150)
     shipping_phone = models.CharField(max_length=20)
     shipping_address = models.TextField()
+    payment_method = models.CharField(max_length=30, blank=True)
+    payment_status = models.CharField(max_length=30, default='unpaid')
+    paynow_poll_url = models.URLField(max_length=500, blank=True)
+    paynow_reference = models.CharField(max_length=100, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

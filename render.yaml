@@ -34,3 +34,11 @@ services:
         sync: false
       - key: TWILIO_VERIFY_SERVICE_SID
         sync: false
+      - key: PAYNOW_INTEGRATION_ID
+        sync: false
+      - key: PAYNOW_INTEGRATION_KEY
+        sync: false
+      - key: PAYNOW_RETURN_URL
+        value: https://maphric-express-grocery.t08406096.chatgpt.site
+      - key: PAYNOW_RESULT_URL
+        value: https://maphric-express-api.onrender.com/api/v1/payments/callback/
