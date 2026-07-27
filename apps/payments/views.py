@@ -46,7 +46,10 @@ class InitiatePaymentView(APIView):
             return Response({'detail': 'Enter the EcoCash phone number.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
             paynow = gateway()
-            payment = paynow.create_payment(f'MAP-{order.id:06d}', request.user.email)
+            auth_email = (order.user.email or request.user.email or '').strip()
+            if not auth_email:
+                return Response({'detail': 'The order account needs an email address before EcoCash payment.'}, status=status.HTTP_400_BAD_REQUEST)
+            payment = paynow.create_payment(f'MAP-{order.id:06d}', auth_email)
             payment.add(f'Maphric Express order MAP-{order.id:06d}', float(order.total))
             response = paynow.send_mobile(payment, phone, 'ecocash')
         except Exception as exc:
