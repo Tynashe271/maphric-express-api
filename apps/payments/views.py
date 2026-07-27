@@ -55,7 +55,11 @@ class InitiatePaymentView(APIView):
         except Exception as exc:
             return Response({'detail': f'EcoCash could not be contacted: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
         if not getattr(response, 'success', False):
-            return Response({'detail': getattr(response, 'error', None) or 'EcoCash rejected the payment request.'}, status=status.HTTP_400_BAD_REQUEST)
+            paynow_error = getattr(response, 'error', None)
+            return Response(
+                {'detail': str(paynow_error) if paynow_error else 'EcoCash rejected the payment request.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         poll_url = getattr(response, 'poll_url', '')
         if not poll_url:
             return Response({'detail': 'Paynow accepted the request but did not return a payment status URL.'}, status=status.HTTP_502_BAD_GATEWAY)
