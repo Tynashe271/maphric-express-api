@@ -44,6 +44,9 @@ class InitiatePaymentView(APIView):
         phone = ''.join(c for c in str(request.data.get('phone', '')) if c.isdigit() or c == '+')
         if not phone:
             return Response({'detail': 'Enter the EcoCash phone number.'}, status=status.HTTP_400_BAD_REQUEST)
+        test_mode = os.getenv('PAYNOW_TEST_MODE', 'False').lower() in {'1', 'true', 'yes', 'on'}
+        if test_mode:
+            phone = '0771111111'
         try:
             paynow = gateway()
             auth_email = (
@@ -73,7 +76,12 @@ class InitiatePaymentView(APIView):
         order.payment_status = 'pending'
         order.paynow_poll_url = poll_url
         order.save(update_fields=['payment_method', 'payment_status', 'paynow_poll_url', 'updated_at'])
-        return Response({'paid': False, 'status': 'pending', 'message': 'Approve the EcoCash prompt on your phone.'})
+        return Response({
+            'paid': False,
+            'status': 'pending',
+            'test_mode': test_mode,
+            'message': 'Paynow test success is being simulated.' if test_mode else 'Approve the EcoCash prompt on your phone.',
+        })
 
 
 class PaymentStatusView(APIView):
