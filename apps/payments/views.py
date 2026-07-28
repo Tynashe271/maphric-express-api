@@ -116,7 +116,14 @@ class PaymentConfigView(APIView):
         keys = (
             'PAYNOW_INTEGRATION_ID',
             'PAYNOW_INTEGRATION_KEY',
+            'PAYNOW_AUTH_EMAIL',
             'PAYNOW_RETURN_URL',
             'PAYNOW_RESULT_URL',
         )
-        return Response({key: bool(os.getenv(key, '').strip()) for key in keys})
+        values = {key: bool(os.getenv(key, '').strip()) for key in keys}
+        email = os.getenv('PAYNOW_AUTH_EMAIL', '').strip()
+        values['PAYNOW_AUTH_EMAIL_MASKED'] = (
+            f'{email[:1]}{"*" * max(0, email.find("@") - 2)}{email[email.find("@") - 1:]}'
+            if '@' in email else ''
+        )
+        return Response(values)
