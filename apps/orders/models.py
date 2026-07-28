@@ -69,3 +69,19 @@ class AdminActivity(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+
+
+class DeliverySettings(models.Model):
+    delivery_fee = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+    free_delivery_threshold = models.DecimalField(max_digits=8, decimal_places=2, default=50)
+    delivery_areas = models.CharField(max_length=500, default='Bradfield, Bulawayo')
+    estimated_minutes = models.PositiveIntegerField(default=55)
+    opening_hours = models.CharField(max_length=250, default='Monday to Sunday')
+    delivery_policy = models.TextField(blank=True, default='Same-day delivery is available within Bulawayo.')
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name_plural = 'delivery settings'

@@ -12,7 +12,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from apps.cart.models import CartItem
 from apps.products.models import Product, Review
-from .models import AdminActivity, Order, OrderItem, TransactionArchive
+from .models import AdminActivity, DeliverySettings, Order, OrderItem, TransactionArchive
 from .serializers import OrderSerializer
 
 
@@ -24,6 +24,37 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         queryset = Order.objects.filter(user=self.request.user).prefetch_related('items')
         return Order.objects.prefetch_related('items') if self.request.user.is_staff else queryset
 
+    @action(detail=False, methods=['get', 'put'], permission_classes=[permissions.AllowAny], url_path='delivery-settings')
+    def delivery_settings(self, request):
+        settings_record, _ = DeliverySettings.objects.get_or_create(pk=1)
+        if request.method == 'PUT':
+            if not request.user.is_authenticated or not request.user.is_staff:
+                return Response({'detail': 'Administrator permission is required.'}, status=status.HTTP_403_FORBIDDEN)
+            fields = ('delivery_fee', 'free_delivery_threshold', 'delivery_areas', 'estimated_minutes', 'opening_hours', 'delivery_policy')
+            for field in fields:
+                if field in request.data:
+                    setattr(settings_record, field, request.data[field])
+            settings_record.updated_by = request.user
+            try:
+                settings_record.full_clean()
+                settings_record.save()
+            except Exception as error:
+                return Response({'detail': str(error)}, status=status.HTTP_400_BAD_REQUEST)
+            AdminActivity.objects.create(
+                actor=request.user,
+                action='delivery_settings_updated',
+                description='Updated customer delivery settings.',
+            )
+        return Response({
+            'delivery_fee': settings_record.delivery_fee,
+            'free_delivery_threshold': settings_record.free_delivery_threshold,
+            'delivery_areas': settings_record.delivery_areas,
+            'estimated_minutes': settings_record.estimated_minutes,
+            'opening_hours': settings_record.opening_hours,
+            'delivery_policy': settings_record.delivery_policy,
+            'updated_at': settings_record.updated_at,
+        })
+
     @action(detail=False, methods=['post'])
     def checkout(self, request):
         serializer = OrderSerializer(data=request.data)
@@ -34,7 +65,14 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         if any(item.quantity > item.product.stock_quantity for item in cart_items):
             return Response({'detail': 'One or more products are out of stock.'}, status=status.HTTP_400_BAD_REQUEST)
         with transaction.atomic():
-            total = sum(item.subtotal for item in cart_items)
+            subtotal = sum(item.subtotal for item in cart_items)
+            delivery = DeliverySettings.objects.filter(pk=1).first()
+            delivery_fee = (
+                delivery.delivery_fee
+                if delivery and subtotal < delivery.free_delivery_threshold
+                else 0
+            )
+            total = subtotal + delivery_fee
             order = Order.objects.create(user=request.user, total=total, **serializer.validated_data)
             for item in cart_items:
                 OrderItem.objects.create(order=order, product=item.product, product_name=item.product.name, unit_price=item.product.price, quantity=item.quantity)
