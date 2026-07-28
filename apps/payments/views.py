@@ -27,7 +27,7 @@ class InitiatePaymentView(APIView):
             return self._initiate(request)
         except Exception as exc:
             return Response(
-                {'detail': f'EcoCash setup error: {type(exc).__name__}: {exc}'},
+                {'detail': 'EcoCash could not start the payment. Please try again or choose another payment method.'},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
@@ -61,12 +61,14 @@ class InitiatePaymentView(APIView):
             payment.add(f'Maphric Express order MAP-{order.id:06d}', float(order.total))
             response = paynow.send_mobile(payment, phone, 'ecocash')
         except Exception as exc:
-            return Response({'detail': f'EcoCash could not be contacted: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+            return Response(
+                {'detail': 'EcoCash could not be contacted. Please try again or choose another payment method.'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
         if not getattr(response, 'success', False):
             response_data = getattr(response, 'data', {}) or {}
-            paynow_error = response_data.get('error') if isinstance(response_data, dict) else None
             return Response(
-                {'detail': str(paynow_error) if paynow_error else 'EcoCash rejected the payment request.'},
+                {'detail': 'EcoCash rejected the payment request. Check the number or choose another payment method.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         poll_url = getattr(response, 'poll_url', '')
