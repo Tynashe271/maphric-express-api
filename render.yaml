@@ -41,7 +41,7 @@ services:
       - key: PAYNOW_AUTH_EMAIL
         sync: false
       - key: PAYNOW_TEST_MODE
-        value: "True"
+        value: "False"
       - key: PAYNOW_RETURN_URL
         value: https://maphric-express-grocery.t08406096.chatgpt.site
       - key: PAYNOW_RESULT_URL
