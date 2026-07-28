@@ -15,7 +15,6 @@ from rest_framework.authtoken.models import Token
 from rest_framework.throttling import AnonRateThrottle
 import json
 import hashlib
-import hmac
 import secrets
 from urllib import error as urlerror, parse, request as urlrequest
 from .models import User
@@ -47,16 +46,10 @@ class UserViewSet(viewsets.ModelViewSet):
         return f'login-cache:{digest}'
 
     @classmethod
-    def _cache_login(cls, user, token, serialized_user=None, raw_password=None):
+    def _cache_login(cls, user, token, serialized_user=None):
         cached = {
             'user': serialized_user or UserSerializer(user).data,
             'token': token.key,
-            'password_hash': user.password,
-            'fast_verifier': hmac.new(
-                settings.SECRET_KEY.encode(),
-                raw_password.encode(),
-                hashlib.sha256,
-            ).hexdigest() if raw_password else None,
         }
         cache.set(cls._login_cache_key(user.username), cached, timeout=300)
         if user.email:
@@ -77,7 +70,7 @@ class UserViewSet(viewsets.ModelViewSet):
             # directly avoids an unnecessary remote SELECT against Neon.
             token = Token.objects.create(user=user)
             serialized_user = UserSerializer(user).data
-            self._cache_login(user, token, serialized_user, serializer.validated_data['password'])
+            self._cache_login(user, token, serialized_user)
             return Response({
                 'user': serialized_user,
                 'token': token.key
@@ -90,21 +83,6 @@ class UserViewSet(viewsets.ModelViewSet):
         if serializer.is_valid():
             login_name = serializer.validated_data['username']
             supplied_password = serializer.validated_data['password']
-            cached = cache.get(self._login_cache_key(login_name))
-            if cached:
-                supplied_verifier = hmac.new(
-                    settings.SECRET_KEY.encode(),
-                    supplied_password.encode(),
-                    hashlib.sha256,
-                ).hexdigest()
-                verifier_matches = cached.get('fast_verifier') and hmac.compare_digest(
-                    supplied_verifier, cached['fast_verifier']
-                )
-                if verifier_matches or (
-                    not cached.get('fast_verifier')
-                    and check_password(supplied_password, cached['password_hash'])
-                ):
-                    return Response({'user': cached['user'], 'token': cached['token']})
             user = User.objects.select_related('auth_token').filter(
                 Q(username__iexact=login_name) | Q(email__iexact=login_name)
             ).first()
@@ -114,7 +92,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 except Token.DoesNotExist:
                     token = Token.objects.create(user=user)
                 serialized_user = UserSerializer(user).data
-                self._cache_login(user, token, serialized_user, supplied_password)
+                self._cache_login(user, token, serialized_user)
                 return Response({
                     'user': serialized_user,
                     'token': token.key

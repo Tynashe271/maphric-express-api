@@ -1,16 +1,18 @@
 from django.db import transaction
-from django.db.models import F, Sum
-from django.http import FileResponse
+from django.db.models import Count, F, Q, Sum
+from django.http import FileResponse, HttpResponse, JsonResponse
 from django.core.serializers.json import DjangoJSONEncoder
 from io import BytesIO
 import json
+import csv
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from apps.cart.models import CartItem
-from .models import Order, OrderItem, TransactionArchive
+from apps.products.models import Product, Review
+from .models import AdminActivity, Order, OrderItem, TransactionArchive
 from .serializers import OrderSerializer
 
 
@@ -59,6 +61,12 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
                 total_amount=total,
                 data=snapshot,
             )
+            AdminActivity.objects.create(
+                actor=request.user,
+                action='transactions_archived',
+                description=f'Archived and removed {count} transactions.',
+                metadata={'archive_id': archive.id, 'transaction_count': count, 'total_amount': str(total)},
+            )
             for item in OrderItem.objects.filter(order__in=orders):
                 item.product.__class__.objects.filter(pk=item.product_id).update(
                     stock_quantity=F('stock_quantity') + item.quantity
@@ -73,15 +81,112 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAdminUser], url_path='transaction-archives')
     def transaction_archives(self, request):
         archives = TransactionArchive.objects.all()
+        query = request.query_params.get('q', '').strip()
+        start = request.query_params.get('from', '').strip()
+        end = request.query_params.get('to', '').strip()
+        if query.isdigit():
+            archives = archives.filter(pk=int(query))
+        if start:
+            archives = archives.filter(created_at__date__gte=start)
+        if end:
+            archives = archives.filter(created_at__date__lte=end)
         return Response([
             {
                 'id': archive.id,
                 'transaction_count': archive.transaction_count,
                 'total_amount': archive.total_amount,
                 'created_at': archive.created_at,
+                'created_by': archive.created_by.get_full_name() or archive.created_by.username if archive.created_by else 'System',
             }
             for archive in archives
         ])
+
+    @action(
+        detail=False,
+        methods=['get'],
+        permission_classes=[permissions.IsAdminUser],
+        url_path=r'transaction-archives/(?P<archive_id>\d+)/csv',
+    )
+    def transaction_archive_csv(self, request, archive_id=None):
+        archive = TransactionArchive.objects.filter(pk=archive_id).first()
+        if not archive:
+            return Response({'detail': 'Archive not found.'}, status=status.HTTP_404_NOT_FOUND)
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="maphric-transactions-archive-{archive.id}.csv"'
+        writer = csv.writer(response)
+        writer.writerow(['Order number', 'Created', 'Customer', 'Phone', 'Status', 'Payment method', 'Payment status', 'Total'])
+        for order in archive.data:
+            writer.writerow([
+                f"MAP-{int(order['id']):06d}", order.get('created_at', ''), order.get('shipping_name', ''),
+                order.get('shipping_phone', ''), order.get('status', ''), order.get('payment_method', ''),
+                order.get('payment_status', ''), order.get('total', '0.00'),
+            ])
+        return response
+
+    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAdminUser], url_path='admin-summary')
+    def admin_summary(self, request):
+        orders = Order.objects.all()
+        totals = orders.aggregate(revenue=Sum('total'), transactions=Count('id'))
+        payment_status = list(orders.values('payment_status').annotate(count=Count('id'), total=Sum('total')).order_by('payment_status'))
+        order_status = list(orders.values('status').annotate(count=Count('id')).order_by('status'))
+        low_stock = list(Product.objects.filter(is_active=True, stock_quantity__lte=8).values('id', 'name', 'stock_quantity', 'price').order_by('stock_quantity'))
+        return Response({
+            'revenue': totals['revenue'] or 0,
+            'transactions': totals['transactions'] or 0,
+            'payment_status': payment_status,
+            'order_status': order_status,
+            'low_stock': low_stock,
+        })
+
+    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAdminUser], url_path='admin-activity')
+    def admin_activity(self, request):
+        return Response([
+            {
+                'id': item.id,
+                'actor': item.actor.get_full_name() or item.actor.username if item.actor else 'System',
+                'action': item.action,
+                'description': item.description,
+                'metadata': item.metadata,
+                'created_at': item.created_at,
+            }
+            for item in AdminActivity.objects.select_related('actor')[:200]
+        ])
+
+    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAdminUser], url_path='admin-reviews')
+    def admin_reviews(self, request):
+        return Response([
+            {
+                'id': review.id,
+                'customer': review.user.get_full_name() or review.user.username,
+                'product': review.product.name,
+                'rating': review.rating,
+                'comment': review.comment,
+                'created_at': review.created_at,
+            }
+            for review in Review.objects.select_related('user', 'product')[:200]
+        ])
+
+    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAdminUser], url_path='backup')
+    def backup(self, request):
+        payload = {
+            'generated_at': request._request.META.get('REQUEST_TIME', ''),
+            'orders': OrderSerializer(Order.objects.all(), many=True).data,
+            'archives': [
+                {
+                    'id': archive.id,
+                    'created_at': archive.created_at.isoformat(),
+                    'transaction_count': archive.transaction_count,
+                    'total_amount': str(archive.total_amount),
+                    'data': archive.data,
+                }
+                for archive in TransactionArchive.objects.all()
+            ],
+            'products': list(Product.objects.all().values()),
+        }
+        AdminActivity.objects.create(actor=request.user, action='backup_downloaded', description='Downloaded a store data backup.')
+        response = JsonResponse(payload, json_dumps_params={'indent': 2})
+        response['Content-Disposition'] = 'attachment; filename="maphric-store-backup.json"'
+        return response
 
     @action(
         detail=False,

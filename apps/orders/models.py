@@ -52,3 +52,20 @@ class TransactionArchive(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+
+
+class AdminActivity(models.Model):
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='admin_activities',
+    )
+    action = models.CharField(max_length=80)
+    description = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
