@@ -46,7 +46,12 @@ class InitiatePaymentView(APIView):
             return Response({'detail': 'Enter the EcoCash phone number.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
             paynow = gateway()
-            auth_email = (order.user.email or request.user.email or '').strip()
+            auth_email = (
+                os.getenv('PAYNOW_AUTH_EMAIL', '')
+                or order.user.email
+                or request.user.email
+                or ''
+            ).strip()
             if not auth_email:
                 return Response({'detail': 'The order account needs an email address before EcoCash payment.'}, status=status.HTTP_400_BAD_REQUEST)
             payment = paynow.create_payment(f'MAP-{order.id:06d}', auth_email)
