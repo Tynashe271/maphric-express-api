@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.db.models import F
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -33,3 +34,20 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
                 item.product.save(update_fields=['stock_quantity'])
             CartItem.objects.filter(user=request.user).delete()
         return Response(OrderSerializer(order).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['post'], permission_classes=[permissions.IsAdminUser], url_path='wipe-transactions')
+    def wipe_transactions(self, request):
+        if request.data.get('confirmation') != 'WIPE ALL TRANSACTIONS':
+            return Response(
+                {'detail': 'Type WIPE ALL TRANSACTIONS to confirm.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        with transaction.atomic():
+            orders = Order.objects.all()
+            count = orders.count()
+            for item in OrderItem.objects.filter(order__in=orders):
+                item.product.__class__.objects.filter(pk=item.product_id).update(
+                    stock_quantity=F('stock_quantity') + item.quantity
+                )
+            orders.delete()
+        return Response({'deleted': count, 'detail': 'All transactions were permanently removed.'})
