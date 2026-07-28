@@ -35,3 +35,20 @@ class OrderItem(models.Model):
     product_name = models.CharField(max_length=200)
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)
     quantity = models.PositiveIntegerField()
+
+
+class TransactionArchive(models.Model):
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='transaction_archives',
+    )
+    transaction_count = models.PositiveIntegerField(default=0)
+    total_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    data = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
