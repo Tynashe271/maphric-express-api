@@ -168,6 +168,10 @@ CORS_ALLOWED_ORIGINS = config(
     'CORS_ALLOWED_ORIGINS',
     default='http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000',
 ).split(',')
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r'^https?://localhost:\d+$',
+    r'^https?://127\.0\.0\.1:\d+$',
+]
 
 # Celery Configuration
 CELERY_BROKER_URL = config('REDIS_URL', default='redis://localhost:6379')
