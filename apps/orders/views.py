@@ -24,6 +24,45 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         queryset = Order.objects.filter(user=self.request.user).prefetch_related('items')
         return Order.objects.prefetch_related('items') if self.request.user.is_staff else queryset
 
+    @action(
+        detail=True,
+        methods=['patch'],
+        permission_classes=[permissions.IsAdminUser],
+        url_path='set-status',
+    )
+    def set_status(self, request, pk=None):
+        order = self.get_object()
+        next_status = str(request.data.get('status', '')).strip().lower()
+        allowed = {value for value, _label in Order.Status.choices}
+        if next_status not in allowed:
+            return Response(
+                {
+                    'detail': (
+                        'Choose a valid order status: '
+                        + ', '.join(sorted(allowed))
+                        + '.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        previous = order.status
+        order.status = next_status
+        order.save(update_fields=['status', 'updated_at'])
+        AdminActivity.objects.create(
+            actor=request.user,
+            action='order_status_updated',
+            description=(
+                f'Changed order MAP-{order.id:06d} '
+                f'from {previous} to {next_status}.'
+            ),
+            metadata={
+                'order_id': order.id,
+                'previous_status': previous,
+                'status': next_status,
+            },
+        )
+        return Response(OrderSerializer(order).data)
+
     @action(detail=False, methods=['get', 'put'], permission_classes=[permissions.AllowAny], url_path='delivery-settings')
     def delivery_settings(self, request):
         settings_record, _ = DeliverySettings.objects.get_or_create(pk=1)
