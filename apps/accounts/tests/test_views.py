@@ -43,14 +43,6 @@ class RegistrationTests(AccountsApiTestCase):
         self.assertEqual(response.data['user']['username'], 'newshopper')
         self.assertTrue(Token.objects.filter(key=response.data['token']).exists())
 
-    def test_register_caches_login_payload_for_username_and_email(self):
-        self.client.post(REGISTER_URL, REGISTER_PAYLOAD, format='json')
-
-        for login_name in ('newshopper', 'newshopper@example.com'):
-            cached = cache.get(UserViewSet._login_cache_key(login_name))
-            self.assertIsNotNone(cached)
-            self.assertEqual(cached['user']['username'], 'newshopper')
-
     def test_register_rejects_invalid_payload(self):
         response = self.client.post(REGISTER_URL, {**REGISTER_PAYLOAD, 'password2': 'mismatch'}, format='json')
 
@@ -343,7 +335,6 @@ class PasswordResetVerifyAndConfirmTests(AccountsApiTestCase):
         self.assertTrue(self.user.check_password('n3w-passw0rd!'))
         self.assertFalse(Token.objects.filter(user=self.user).exists())
         self.assertIsNone(cache.get(UserViewSet._reset_key(self.reset_id)))
-        self.assertIsNone(cache.get(UserViewSet._login_cache_key('shopper')))
 
     def test_confirm_rejects_username_from_another_account(self):
         self._verify()

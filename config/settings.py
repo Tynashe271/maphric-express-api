@@ -3,14 +3,18 @@
 from pathlib import Path
 import dj_database_url
 from decouple import config
+from django.core.exceptions import ImproperlyConfigured
 from celery.schedules import crontab
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 COMPANY_NAME = 'Maphric Investments T/A Engen Bradfield Express Shop'
 
-# Quick-start development settings - unsuitable for production
-SECRET_KEY = config('SECRET_KEY', default='django-insecure-your-secret-key-here')
+
+def csv_setting(name, default=''):
+    """Read a comma separated environment value into a clean list."""
+    return [item.strip() for item in config(name, default=default).split(',') if item.strip()]
+
 
 # Treat only explicit development values as enabled. This also safely accepts
 # deployment values such as DEBUG=release as False.
@@ -20,7 +24,14 @@ DEBUG = config(
     cast=lambda value: value.strip().lower() in {'1', 'true', 'yes', 'on'},
 )
 
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1').split(',')
+# A signing key must always come from the environment outside development.
+SECRET_KEY = config('SECRET_KEY', default='')
+if not SECRET_KEY:
+    if not DEBUG:
+        raise ImproperlyConfigured('SECRET_KEY must be set when DEBUG is disabled.')
+    SECRET_KEY = 'django-insecure-development-only-key'
+
+ALLOWED_HOSTS = csv_setting('ALLOWED_HOSTS', 'localhost,127.0.0.1')
 
 # Application definition
 INSTALLED_APPS = [
@@ -159,24 +170,68 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
     ],
-    'DEFAULT_THROTTLE_RATES': {'anon': '100/hour', 'user': '1000/hour'},
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '100/hour',
+        'user': '1000/hour',
+        # Credential endpoints need their own tighter budgets.
+        'login': '10/min',
+        'register': '20/hour',
+        'password_reset': '10/hour',
+    },
 }
 
-# CORS settings
+# CORS settings. Browser origins are opt-in through the environment; only local
+# development hosts are matched by pattern.
 CORS_ALLOW_ALL_ORIGINS = DEBUG
-CORS_ALLOWED_ORIGINS = config(
+CORS_ALLOWED_ORIGINS = csv_setting(
     'CORS_ALLOWED_ORIGINS',
-    default='http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000',
-).split(',')
+    'http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000',
+)
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r'^https?://localhost:\d+$',
     r'^https?://127\.0\.0\.1:\d+$',
-    r'^https://[a-z0-9-]+\.chatgpt\.site$',
+] if DEBUG else csv_setting('CORS_ALLOWED_ORIGIN_REGEXES')
+CSRF_TRUSTED_ORIGINS = csv_setting('CSRF_TRUSTED_ORIGINS') or [
+    origin for origin in CORS_ALLOWED_ORIGINS if origin.startswith('https://')
 ]
 
+# Transport and cookie hardening. Render terminates TLS in front of gunicorn,
+# so the forwarded protocol header decides whether a request is already secure.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+X_FRAME_OPTIONS = 'DENY'
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SAMESITE = 'Lax'
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=not DEBUG, cast=bool)
+# The platform health probe is served over plain HTTP inside the network.
+SECURE_REDIRECT_EXEMPT = [r'^health/$']
+SECURE_HSTS_SECONDS = 0 if DEBUG else config('SECURE_HSTS_SECONDS', default=31536000, cast=int)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = not DEBUG
+SECURE_HSTS_PRELOAD = not DEBUG
+
+# Cache backend. Rate limiting and password reset codes must be shared across
+# gunicorn workers, so a Redis URL is used whenever one is configured.
+_REDIS_URL = config('REDIS_URL', default='')
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'LOCATION': _REDIS_URL,
+    } if _REDIS_URL else {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'maphric-express',
+    }
+}
+
+# API documentation exposes the whole surface, so it is private by default.
+API_DOCS_PUBLIC = config('API_DOCS_PUBLIC', default=DEBUG, cast=bool)
+
 # Celery Configuration
-CELERY_BROKER_URL = config('REDIS_URL', default='redis://localhost:6379')
-CELERY_RESULT_BACKEND = config('REDIS_URL', default='redis://localhost:6379')
+CELERY_BROKER_URL = _REDIS_URL or 'redis://localhost:6379'
+CELERY_RESULT_BACKEND = _REDIS_URL or 'redis://localhost:6379'
 CELERY_ACCEPT_CONTENT = ['application/json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'

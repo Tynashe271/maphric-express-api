@@ -1,7 +1,9 @@
 from django.db import transaction
 from django.db.models import Count, F, Q, Sum
 from django.http import FileResponse, HttpResponse, JsonResponse
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.serializers.json import DjangoJSONEncoder
+from django.utils.dateparse import parse_date
 from io import BytesIO
 import json
 import csv
@@ -9,6 +11,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from apps.cart.models import CartItem
 from apps.common.querysets import scope_to_user
@@ -26,6 +29,17 @@ DELIVERY_SETTINGS_FIELDS = (
     'opening_hours',
     'delivery_policy',
 )
+
+
+def archive_date_param(request, name):
+    """Return a validated ISO date query parameter, or None when absent."""
+    raw = request.query_params.get(name, '').strip()
+    if not raw:
+        return None
+    parsed = parse_date(raw)
+    if parsed is None:
+        raise ValidationError({name: 'Use the YYYY-MM-DD date format.'})
+    return parsed
 
 
 class OrderViewSet(viewsets.ReadOnlyModelViewSet):
@@ -86,8 +100,10 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
             try:
                 settings_record.full_clean()
                 settings_record.save()
-            except Exception as error:
-                return error_response(str(error))
+            except DjangoValidationError as error:
+                return Response({'detail': error.message_dict}, status=status.HTTP_400_BAD_REQUEST)
+            except (TypeError, ValueError):
+                return error_response('One or more delivery settings values are invalid.')
             self._log_admin_activity(
                 request.user,
                 'delivery_settings_updated',
@@ -161,13 +177,11 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
     def transaction_archives(self, request):
         archives = TransactionArchive.objects.all()
         query = request.query_params.get('q', '').strip()
-        start = request.query_params.get('from', '').strip()
-        end = request.query_params.get('to', '').strip()
         if query.isdigit():
             archives = archives.filter(pk=int(query))
-        if start:
+        if start := archive_date_param(request, 'from'):
             archives = archives.filter(created_at__date__gte=start)
-        if end:
+        if end := archive_date_param(request, 'to'):
             archives = archives.filter(created_at__date__lte=end)
         return Response([
             {

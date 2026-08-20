@@ -1,5 +1,5 @@
 from rest_framework import viewsets, permissions, status
-from rest_framework.decorators import action, throttle_classes
+from rest_framework.decorators import action
 from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.response import Response
 from django.contrib.auth.hashers import check_password, make_password
@@ -12,7 +12,6 @@ from django.db import OperationalError, close_old_connections, transaction
 from django.db.models import Q
 from rest_framework.authtoken.models import Token
 from rest_framework.throttling import AnonRateThrottle
-import hashlib
 import secrets
 from apps.common import verification
 from apps.common.responses import error_response, service_unavailable
@@ -20,9 +19,22 @@ from apps.common.text import mask_email, normalize_phone_number, to_internationa
 from .models import User
 from .serializers import UserSerializer, LoginSerializer, RegisterSerializer
 
+
+class LoginRateThrottle(AnonRateThrottle):
+    scope = 'login'
+
+
+class RegisterRateThrottle(AnonRateThrottle):
+    scope = 'register'
+
+
+class PasswordResetRateThrottle(AnonRateThrottle):
+    scope = 'password_reset'
+
+
 MESSAGING_CHANNELS = {'sms', 'whatsapp'}
-LOGIN_CACHE_TIMEOUT = 300
 RESET_TIMEOUT = 300
+
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
@@ -44,28 +56,7 @@ class UserViewSet(viewsets.ModelViewSet):
         """Accounts must be created through the validated register endpoint."""
         raise MethodNotAllowed('POST')
 
-    @staticmethod
-    def _login_cache_key(login_name):
-        digest = hashlib.sha256(login_name.strip().lower().encode()).hexdigest()
-        return f'login-cache:{digest}'
-
-    @classmethod
-    def _cache_login(cls, user, token, serialized_user=None):
-        cached = {
-            'user': serialized_user or UserSerializer(user).data,
-            'token': token.key,
-        }
-        cache.set(cls._login_cache_key(user.username), cached, timeout=LOGIN_CACHE_TIMEOUT)
-        if user.email:
-            cache.set(cls._login_cache_key(user.email), cached, timeout=LOGIN_CACHE_TIMEOUT)
-
-    @classmethod
-    def _clear_login_cache(cls, user):
-        cache.delete(cls._login_cache_key(user.username))
-        if user.email:
-            cache.delete(cls._login_cache_key(user.email))
-
-    @action(detail=False, methods=['post'])
+    @action(detail=False, methods=['post'], throttle_classes=[RegisterRateThrottle])
     def register(self, request):
         serializer = RegisterSerializer(data=request.data)
         if serializer.is_valid():
@@ -74,14 +65,13 @@ class UserViewSet(viewsets.ModelViewSet):
             # directly avoids an unnecessary remote SELECT against Neon.
             token = Token.objects.create(user=user)
             serialized_user = UserSerializer(user).data
-            self._cache_login(user, token, serialized_user)
             return Response({
                 'user': serialized_user,
                 'token': token.key
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    @action(detail=False, methods=['post'])
+    @action(detail=False, methods=['post'], throttle_classes=[LoginRateThrottle])
     def login(self, request):
         serializer = LoginSerializer(data=request.data)
         if serializer.is_valid():
@@ -96,7 +86,6 @@ class UserViewSet(viewsets.ModelViewSet):
                 except Token.DoesNotExist:
                     token = Token.objects.create(user=user)
                 serialized_user = UserSerializer(user).data
-                self._cache_login(user, token, serialized_user)
                 return Response({
                     'user': serialized_user,
                     'token': token.key
@@ -108,8 +97,12 @@ class UserViewSet(viewsets.ModelViewSet):
     def _reset_key(reset_id):
         return f'password-reset:{reset_id}'
 
-    @action(detail=False, methods=['post'], url_path='password-reset/request')
-    @throttle_classes([AnonRateThrottle])
+    @action(
+        detail=False,
+        methods=['post'],
+        url_path='password-reset/request',
+        throttle_classes=[PasswordResetRateThrottle],
+    )
     def password_reset_request(self, request):
         username = str(request.data.get('username', '')).strip()
         phone = normalize_phone_number(request.data.get('phone_number', ''))
@@ -162,8 +155,12 @@ class UserViewSet(viewsets.ModelViewSet):
         }, timeout=RESET_TIMEOUT)
         return Response({'reset_id': reset_id, 'destination': destination, 'expires_in': RESET_TIMEOUT})
 
-    @action(detail=False, methods=['post'], url_path='password-reset/verify')
-    @throttle_classes([AnonRateThrottle])
+    @action(
+        detail=False,
+        methods=['post'],
+        url_path='password-reset/verify',
+        throttle_classes=[PasswordResetRateThrottle],
+    )
     def password_reset_verify(self, request):
         reset_id = str(request.data.get('reset_id', ''))
         code = str(request.data.get('code', '')).strip()
@@ -188,8 +185,12 @@ class UserViewSet(viewsets.ModelViewSet):
         cache.set(self._reset_key(reset_id), data, timeout=RESET_TIMEOUT)
         return Response({'verified': True})
 
-    @action(detail=False, methods=['post'], url_path='password-reset/confirm')
-    @throttle_classes([AnonRateThrottle])
+    @action(
+        detail=False,
+        methods=['post'],
+        url_path='password-reset/confirm',
+        throttle_classes=[PasswordResetRateThrottle],
+    )
     def password_reset_confirm(self, request):
         reset_id = str(request.data.get('reset_id', ''))
         username = str(request.data.get('username', '')).strip()
@@ -215,7 +216,6 @@ class UserViewSet(viewsets.ModelViewSet):
                 user.save(update_fields=['password'])
                 Token.objects.filter(user=user).delete()
         try:
-            self._clear_login_cache(user)
             save_new_password()
         except OperationalError:
             close_old_connections()

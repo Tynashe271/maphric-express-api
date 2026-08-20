@@ -74,7 +74,9 @@ class ShoppingAssistantView(APIView):
 
     def post(self, request_obj):
         message = str(request_obj.data.get('message', '')).strip()
-        history = request_obj.data.get('history', [])
+        history = request_obj.data.get('history') or []
+        if not isinstance(history, list):
+            return error_response('Conversation history must be a list of messages.')
         if not message:
             return error_response('Please enter a question.')
         if len(message) > 1200:
@@ -93,11 +95,19 @@ class ShoppingAssistantView(APIView):
 
         prior = []
         for item in history[-6:]:
+            if not isinstance(item, dict):
+                continue
             role = item.get('role')
             content = str(item.get('content', ''))[:800]
             if role in {'user', 'assistant'} and content:
                 prior.append({'role': role, 'content': content})
         prior.append({'role': 'user', 'content': message})
+
+        if not settings.OPENAI_API_KEY:
+            return Response({
+                'answer': self.catalogue_fallback(message, products, recent_orders),
+                'mode': 'catalogue',
+            })
 
         payload = {
             'model': settings.OPENAI_MODEL,

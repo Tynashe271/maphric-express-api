@@ -28,6 +28,13 @@ CACHES = {
     }
 }
 
+# The test client speaks plain HTTP, and the docs routes are exercised directly.
+SECURE_SSL_REDIRECT = False
+SECURE_HSTS_SECONDS = 0
+SESSION_COOKIE_SECURE = False
+CSRF_COOKIE_SECURE = False
+API_DOCS_PUBLIC = True
+
 EMAIL_BACKEND = 'django.core.mail.backends.locmem.EmailBackend'
 DEFAULT_FROM_EMAIL = 'noreply@example.com'
 
@@ -40,8 +47,16 @@ PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
 
 CELERY_TASK_ALWAYS_EAGER = True
 
+# The assistant tests mock the HTTP call, so the key only has to be non-empty.
+OPENAI_API_KEY = 'test-openai-key'
+
 REST_FRAMEWORK = {
     **REST_FRAMEWORK,  # noqa: F405
     'DEFAULT_THROTTLE_CLASSES': [],
-    'DEFAULT_THROTTLE_RATES': {},
+    # Scopes must stay registered for the per-action throttles to resolve; a
+    # rate of None means unlimited.
+    'DEFAULT_THROTTLE_RATES': {
+        scope: None
+        for scope in REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']  # noqa: F405
+    },
 }
