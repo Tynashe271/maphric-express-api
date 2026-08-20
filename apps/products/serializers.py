@@ -2,6 +2,16 @@ from rest_framework import serializers
 from .models import Category, Product, Review, WishlistItem
 
 
+class ActiveProductField(serializers.PrimaryKeyRelatedField):
+    """Write-only reference to a product that is still on sale."""
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault('source', 'product')
+        kwargs.setdefault('queryset', Product.objects.filter(is_active=True))
+        kwargs.setdefault('write_only', True)
+        super().__init__(**kwargs)
+
+
 class CategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Category
@@ -36,7 +46,7 @@ class ProductSerializer(serializers.ModelSerializer):
 
 class WishlistItemSerializer(serializers.ModelSerializer):
     product = ProductSerializer(read_only=True)
-    product_id = serializers.PrimaryKeyRelatedField(source='product', queryset=Product.objects.filter(is_active=True), write_only=True)
+    product_id = ActiveProductField()
 
     class Meta:
         model = WishlistItem

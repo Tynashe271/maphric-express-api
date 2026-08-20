@@ -189,7 +189,7 @@ class PasswordResetRequestTests(AccountsApiTestCase):
 
     @override_settings(TWILIO_ACCOUNT_SID='sid', TWILIO_AUTH_TOKEN='token', TWILIO_VERIFY_SERVICE_SID='service')
     def test_sms_channel_sends_verification_and_masks_phone(self):
-        with mock.patch('apps.accounts.views.urlrequest.urlopen') as urlopen:
+        with mock.patch('apps.common.verification.urlrequest.urlopen') as urlopen:
             urlopen.return_value.read.return_value = b'{}'
             response = self.client.post(
                 RESET_REQUEST_URL,
@@ -207,7 +207,7 @@ class PasswordResetRequestTests(AccountsApiTestCase):
     def test_sms_provider_error_message_is_surfaced(self):
         http_error = urlerror.HTTPError('url', 400, 'Bad Request', {}, None)
         http_error.read = lambda: b'{"message": "Invalid phone number"}'
-        with mock.patch('apps.accounts.views.urlrequest.urlopen', side_effect=http_error):
+        with mock.patch('apps.common.verification.urlrequest.urlopen', side_effect=http_error):
             response = self.client.post(
                 RESET_REQUEST_URL,
                 {'username': 'shopper', 'phone_number': '0771234567', 'channel': 'sms'},
@@ -221,7 +221,7 @@ class PasswordResetRequestTests(AccountsApiTestCase):
     def test_unreadable_sms_provider_error_uses_a_generic_message(self):
         http_error = urlerror.HTTPError('url', 400, 'Bad Request', {}, None)
         http_error.read = lambda: b'<html>gateway error</html>'
-        with mock.patch('apps.accounts.views.urlrequest.urlopen', side_effect=http_error):
+        with mock.patch('apps.common.verification.urlrequest.urlopen', side_effect=http_error):
             response = self.client.post(
                 RESET_REQUEST_URL,
                 {'username': 'shopper', 'phone_number': '0771234567', 'channel': 'sms'},
@@ -233,7 +233,7 @@ class PasswordResetRequestTests(AccountsApiTestCase):
 
     @override_settings(TWILIO_ACCOUNT_SID='sid', TWILIO_AUTH_TOKEN='token', TWILIO_VERIFY_SERVICE_SID='service')
     def test_sms_connection_failure_returns_service_unavailable(self):
-        with mock.patch('apps.accounts.views.urlrequest.urlopen', side_effect=OSError('no route')):
+        with mock.patch('apps.common.verification.urlrequest.urlopen', side_effect=OSError('no route')):
             response = self.client.post(
                 RESET_REQUEST_URL,
                 {'username': 'shopper', 'phone_number': '0771234567', 'channel': 'sms'},
@@ -295,7 +295,7 @@ class PasswordResetVerifyAndConfirmTests(AccountsApiTestCase):
         data.update(channel='sms', phone='+263771234567', code_hash=None)
         cache.set(UserViewSet._reset_key(self.reset_id), data, timeout=300)
 
-        with mock.patch('apps.accounts.views.urlrequest.urlopen') as urlopen:
+        with mock.patch('apps.common.verification.urlrequest.urlopen') as urlopen:
             urlopen.return_value.read.return_value = b'{"status": "approved"}'
             response = self._verify(code='123456')
 
@@ -307,7 +307,7 @@ class PasswordResetVerifyAndConfirmTests(AccountsApiTestCase):
         data.update(channel='sms', phone='+263771234567', code_hash=None)
         cache.set(UserViewSet._reset_key(self.reset_id), data, timeout=300)
 
-        with mock.patch('apps.accounts.views.urlrequest.urlopen', side_effect=OSError('no route')):
+        with mock.patch('apps.common.verification.urlrequest.urlopen', side_effect=OSError('no route')):
             response = self._verify(code='123456')
 
         self.assertEqual(response.status_code, 503)

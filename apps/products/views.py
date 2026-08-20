@@ -4,6 +4,7 @@ from rest_framework import permissions, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
+from apps.common.querysets import OwnedQuerysetMixin
 from .models import Category, Product, Review, WishlistItem
 from .serializers import CategorySerializer, ProductSerializer, ReviewSerializer, WishlistItemSerializer
 
@@ -78,12 +79,7 @@ class ProductViewSet(viewsets.ModelViewSet):
         return Response(ReviewSerializer(review).data)
 
 
-class WishlistViewSet(viewsets.ModelViewSet):
+class WishlistViewSet(OwnedQuerysetMixin, viewsets.ModelViewSet):
     serializer_class = WishlistItemSerializer
     permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        return WishlistItem.objects.filter(user=self.request.user).select_related('product', 'product__category')
-
-    def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+    owned_queryset = WishlistItem.objects.select_related('product', 'product__category')

@@ -3,10 +3,12 @@ import re
 from urllib import error, request
 
 from django.conf import settings
-from rest_framework import permissions, status
+from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.common.responses import bad_gateway, error_response
+from apps.common.text import format_order_reference
 from apps.products.models import Product
 
 
@@ -30,7 +32,10 @@ class ShoppingAssistantView(APIView):
             if not recent_orders:
                 return 'You have no recent orders yet. Completed checkouts will appear in Order history.'
             order = recent_orders[0]
-            return f'Your latest order is MAP-{order.id:06d}. Its current status is {order.status} and its total is USD {order.total}.'
+            return (
+                f'Your latest order is {format_order_reference(order.id)}. Its current status is '
+                f'{order.status} and its total is USD {order.total}.'
+            )
 
         budget_match = re.search(r'(?:\$|usd\s*)?(\d+(?:\.\d{1,2})?)', query)
         if budget_match and any(word in query for word in ('buy', 'budget', 'afford', 'spend', '$', 'usd')):
@@ -71,11 +76,11 @@ class ShoppingAssistantView(APIView):
         message = str(request_obj.data.get('message', '')).strip()
         history = request_obj.data.get('history') or []
         if not isinstance(history, list):
-            return Response({'detail': 'Conversation history must be a list of messages.'}, status=status.HTTP_400_BAD_REQUEST)
+            return error_response('Conversation history must be a list of messages.')
         if not message:
-            return Response({'detail': 'Please enter a question.'}, status=status.HTTP_400_BAD_REQUEST)
+            return error_response('Please enter a question.')
         if len(message) > 1200:
-            return Response({'detail': 'Please shorten your question.'}, status=status.HTTP_400_BAD_REQUEST)
+            return error_response('Please shorten your question.')
 
         products = list(Product.objects.filter(is_active=True).select_related('category')[:80])
         catalogue = '\n'.join(
@@ -84,7 +89,7 @@ class ShoppingAssistantView(APIView):
         ) or 'No products have been added yet.'
         recent_orders = list(request_obj.user.orders.order_by('-created_at')[:5])
         orders = '\n'.join(
-            f"- MAP-{o.id:06d}: {o.status}, total USD {o.total}"
+            f"- {format_order_reference(o.id)}: {o.status}, total USD {o.total}"
             for o in recent_orders
         ) or 'No customer orders yet.'
 
@@ -132,12 +137,7 @@ class ShoppingAssistantView(APIView):
         try:
             with request.urlopen(api_request, timeout=35) as api_response:
                 result = json.loads(api_response.read().decode('utf-8'))
-        except error.HTTPError:
-            return Response({
-                'answer': self.catalogue_fallback(message, products, recent_orders),
-                'mode': 'catalogue',
-            })
-        except (error.URLError, TimeoutError, json.JSONDecodeError):
+        except (error.HTTPError, error.URLError, TimeoutError, json.JSONDecodeError):
             return Response({
                 'answer': self.catalogue_fallback(message, products, recent_orders),
                 'mode': 'catalogue',
@@ -152,5 +152,5 @@ class ShoppingAssistantView(APIView):
                         texts.append(content.get('text', ''))
             answer = '\n'.join(texts).strip()
         if not answer:
-            return Response({'detail': 'The assistant returned no answer.'}, status=status.HTTP_502_BAD_GATEWAY)
+            return bad_gateway('The assistant returned no answer.')
         return Response({'answer': answer})
