@@ -175,7 +175,7 @@ class InitiatePaymentTests(TestCase):
     def test_unexpected_error_is_not_reported_as_a_gateway_failure(self):
         self.client.raise_request_exception = False
 
-        with mock.patch('apps.payments.views.Order.objects.filter', side_effect=RuntimeError('db down')):
+        with mock.patch('apps.payments.views.scope_to_user', side_effect=RuntimeError('db down')):
             response = self.client.post(INITIATE_URL, {
                 'order_id': self.order.pk,
                 'method': 'ecocash',
