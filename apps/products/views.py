@@ -1,9 +1,25 @@
+from decimal import Decimal, InvalidOperation
 from django.db.models import Q
 from rest_framework import permissions, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from .models import Category, Product, Review, WishlistItem
 from .serializers import CategorySerializer, ProductSerializer, ReviewSerializer, WishlistItemSerializer
+
+
+def decimal_param(params, name):
+    """Return a validated decimal query parameter, or None when absent."""
+    raw = params.get(name)
+    if raw in (None, ''):
+        return None
+    try:
+        value = Decimal(raw)
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValidationError({name: 'Enter a valid amount.'})
+    if value < 0:
+        raise ValidationError({name: 'Enter an amount of 0 or more.'})
+    return value
 
 
 class IsAdminOrReadOnly(permissions.BasePermission):
@@ -25,17 +41,17 @@ class ProductViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = Product.objects.select_related('category').filter(is_active=True)
         params = self.request.query_params
-        if self.request.user.is_staff:
+        if self.request.user.is_authenticated and self.request.user.is_staff:
             queryset = Product.objects.select_related('category').all()
         if category := params.get('category'):
             queryset = queryset.filter(category__slug=category)
         if brand := params.get('brand'):
             queryset = queryset.filter(brand__iexact=brand)
         if search := params.get('search'):
-            queryset = queryset.filter(Q(name__icontains=search) | Q(description__icontains=search))
-        if min_price := params.get('min_price'):
+            queryset = queryset.filter(Q(name__icontains=search[:100]) | Q(description__icontains=search[:100]))
+        if (min_price := decimal_param(params, 'min_price')) is not None:
             queryset = queryset.filter(price__gte=min_price)
-        if max_price := params.get('max_price'):
+        if (max_price := decimal_param(params, 'max_price')) is not None:
             queryset = queryset.filter(price__lte=max_price)
         allowed_sorting = {'price', '-price', 'created_at', '-created_at'}
         if ordering := params.get('ordering'):

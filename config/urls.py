@@ -17,8 +17,10 @@ schema_view = get_schema_view(
         default_version='v1',
         description="API documentation for Maphric Investments T/A Engen Bradfield Express Shop.",
     ),
-    public=True,
-    permission_classes=(permissions.AllowAny,),
+    public=settings.API_DOCS_PUBLIC,
+    permission_classes=(
+        (permissions.AllowAny,) if settings.API_DOCS_PUBLIC else (permissions.IsAdminUser,)
+    ),
 )
 
 urlpatterns = [
