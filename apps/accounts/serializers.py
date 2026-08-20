@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
+from apps.common.text import normalize_phone_number
 
 User = get_user_model()
 
@@ -21,7 +22,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         fields = ['username', 'email', 'phone_number', 'password', 'password2', 'first_name', 'last_name']
 
     def validate_phone_number(self, value):
-        normalized = ''.join(character for character in value if character.isdigit() or character == '+')
+        normalized = normalize_phone_number(value)
         if len(normalized.replace('+', '')) < 9:
             raise serializers.ValidationError("Enter a valid phone number.")
         if User.objects.filter(phone_number=normalized).exists():

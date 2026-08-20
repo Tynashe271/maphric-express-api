@@ -2,7 +2,6 @@ from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action, throttle_classes
 from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.response import Response
-from django.contrib.auth import authenticate
 from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.password_validation import validate_password
 from django.core.cache import cache
@@ -13,12 +12,17 @@ from django.db import OperationalError, close_old_connections, transaction
 from django.db.models import Q
 from rest_framework.authtoken.models import Token
 from rest_framework.throttling import AnonRateThrottle
-import json
 import hashlib
 import secrets
-from urllib import error as urlerror, parse, request as urlrequest
+from apps.common import verification
+from apps.common.responses import error_response, service_unavailable
+from apps.common.text import mask_email, normalize_phone_number, to_international_phone_number
 from .models import User
 from .serializers import UserSerializer, LoginSerializer, RegisterSerializer
+
+MESSAGING_CHANNELS = {'sms', 'whatsapp'}
+LOGIN_CACHE_TIMEOUT = 300
+RESET_TIMEOUT = 300
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
@@ -51,9 +55,9 @@ class UserViewSet(viewsets.ModelViewSet):
             'user': serialized_user or UserSerializer(user).data,
             'token': token.key,
         }
-        cache.set(cls._login_cache_key(user.username), cached, timeout=300)
+        cache.set(cls._login_cache_key(user.username), cached, timeout=LOGIN_CACHE_TIMEOUT)
         if user.email:
-            cache.set(cls._login_cache_key(user.email), cached, timeout=300)
+            cache.set(cls._login_cache_key(user.email), cached, timeout=LOGIN_CACHE_TIMEOUT)
 
     @classmethod
     def _clear_login_cache(cls, user):
@@ -108,50 +112,34 @@ class UserViewSet(viewsets.ModelViewSet):
     @throttle_classes([AnonRateThrottle])
     def password_reset_request(self, request):
         username = str(request.data.get('username', '')).strip()
-        phone = ''.join(character for character in str(request.data.get('phone_number', '')) if character.isdigit() or character == '+')
+        phone = normalize_phone_number(request.data.get('phone_number', ''))
         channel = str(request.data.get('channel', 'email')).lower()
         if not username or not phone:
-            return Response({'detail': 'Enter your username and registered phone number.'}, status=status.HTTP_400_BAD_REQUEST)
+            return error_response('Enter your username and registered phone number.')
         user = User.objects.filter(
             Q(username__iexact=username) | Q(email__iexact=username),
             phone_number=phone,
         ).first()
         if not user:
-            return Response({'detail': 'The username and phone number do not match an account.'}, status=status.HTTP_400_BAD_REQUEST)
+            return error_response('The username and phone number do not match an account.')
 
         code = f'{secrets.randbelow(1000000):06d}'
         reset_id = secrets.token_urlsafe(24)
 
-        if channel in {'sms', 'whatsapp'}:
-            if not all((settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN, settings.TWILIO_VERIFY_SERVICE_SID)):
-                return Response({'detail': 'Messaging recovery is not configured yet. Choose email instead.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-            delivery_phone = f'+263{phone[1:]}' if phone.startswith('0') else phone
-            body = parse.urlencode({'To': delivery_phone, 'Channel': channel}).encode()
-            sms_request = urlrequest.Request(
-                f'https://verify.twilio.com/v2/Services/{settings.TWILIO_VERIFY_SERVICE_SID}/Verifications',
-                data=body,
-                method='POST',
-            )
-            credentials = f'{settings.TWILIO_ACCOUNT_SID}:{settings.TWILIO_AUTH_TOKEN}'.encode()
-            import base64
-            sms_request.add_header('Authorization', f'Basic {base64.b64encode(credentials).decode()}')
+        if channel in MESSAGING_CHANNELS:
+            if not verification.is_configured():
+                return service_unavailable('Messaging recovery is not configured yet. Choose email instead.')
+            delivery_phone = to_international_phone_number(phone)
             try:
-                urlrequest.urlopen(sms_request, timeout=10).read()
-            except urlerror.HTTPError as sms_error:
-                try:
-                    provider_error = json.loads(sms_error.read().decode()).get('message', '')
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    provider_error = ''
-                detail = provider_error or 'The text message could not be sent. Choose email or try again.'
-                return Response({'detail': detail}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-            except Exception:
-                return Response({'detail': 'The verification service could not connect. Choose email or try again.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+                verification.send_code(delivery_phone, channel)
+            except verification.VerificationError as sms_error:
+                return service_unavailable(sms_error.provider_message or sms_error.detail)
             destination = f'phone ending {delivery_phone[-4:]}'
             code_hash = None
         else:
             if not user.email:
                 cache.delete(self._reset_key(reset_id))
-                return Response({'detail': 'This account has no recovery email. Choose text message or contact support.'}, status=status.HTTP_400_BAD_REQUEST)
+                return error_response('This account has no recovery email. Choose text message or contact support.')
             try:
                 send_mail(
                     'Your Maphric Express password reset code',
@@ -161,19 +149,18 @@ class UserViewSet(viewsets.ModelViewSet):
                     fail_silently=False,
                 )
             except Exception:
-                return Response({'detail': 'The email could not be sent. Please try again or contact support.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-            parts = user.email.split('@')
-            destination = f'{parts[0][:2]}***@{parts[1]}' if len(parts) == 2 else 'your registered email'
+                return service_unavailable('The email could not be sent. Please try again or contact support.')
+            destination = mask_email(user.email)
             code_hash = make_password(code)
         cache.set(self._reset_key(reset_id), {
             'user_id': user.id,
             'code_hash': code_hash,
             'channel': channel,
-            'phone': delivery_phone if channel in {'sms', 'whatsapp'} else phone,
+            'phone': delivery_phone if channel in MESSAGING_CHANNELS else phone,
             'attempts': 0,
             'verified': False,
-        }, timeout=300)
-        return Response({'reset_id': reset_id, 'destination': destination, 'expires_in': 300})
+        }, timeout=RESET_TIMEOUT)
+        return Response({'reset_id': reset_id, 'destination': destination, 'expires_in': RESET_TIMEOUT})
 
     @action(detail=False, methods=['post'], url_path='password-reset/verify')
     @throttle_classes([AnonRateThrottle])
@@ -182,34 +169,23 @@ class UserViewSet(viewsets.ModelViewSet):
         code = str(request.data.get('code', '')).strip()
         data = cache.get(self._reset_key(reset_id))
         if not data:
-            return Response({'detail': 'This code has expired. Request a new one.'}, status=status.HTTP_400_BAD_REQUEST)
+            return error_response('This code has expired. Request a new one.')
         if data['attempts'] >= 5:
             cache.delete(self._reset_key(reset_id))
-            return Response({'detail': 'Too many attempts. Request a new code.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
-        code_is_valid = False
-        if data.get('channel') in {'sms', 'whatsapp'}:
-            check_body = parse.urlencode({'To': data['phone'], 'Code': code}).encode()
-            check_request = urlrequest.Request(
-                f'https://verify.twilio.com/v2/Services/{settings.TWILIO_VERIFY_SERVICE_SID}/VerificationCheck',
-                data=check_body,
-                method='POST',
-            )
-            credentials = f'{settings.TWILIO_ACCOUNT_SID}:{settings.TWILIO_AUTH_TOKEN}'.encode()
-            import base64
-            check_request.add_header('Authorization', f'Basic {base64.b64encode(credentials).decode()}')
+            return error_response('Too many attempts. Request a new code.', status.HTTP_429_TOO_MANY_REQUESTS)
+        if data.get('channel') in MESSAGING_CHANNELS:
             try:
-                check_result = json.loads(urlrequest.urlopen(check_request, timeout=10).read().decode())
-                code_is_valid = check_result.get('status') == 'approved'
-            except Exception:
-                return Response({'detail': 'The text verification service is unavailable. Try again.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+                code_is_valid = verification.check_code(data['phone'], code)
+            except verification.VerificationError as check_error:
+                return service_unavailable(check_error.detail)
         else:
             code_is_valid = check_password(code, data['code_hash'])
         if not code_is_valid:
             data['attempts'] += 1
-            cache.set(self._reset_key(reset_id), data, timeout=300)
-            return Response({'detail': 'The verification code is incorrect.'}, status=status.HTTP_400_BAD_REQUEST)
+            cache.set(self._reset_key(reset_id), data, timeout=RESET_TIMEOUT)
+            return error_response('The verification code is incorrect.')
         data['verified'] = True
-        cache.set(self._reset_key(reset_id), data, timeout=300)
+        cache.set(self._reset_key(reset_id), data, timeout=RESET_TIMEOUT)
         return Response({'verified': True})
 
     @action(detail=False, methods=['post'], url_path='password-reset/confirm')
@@ -221,18 +197,18 @@ class UserViewSet(viewsets.ModelViewSet):
         password2 = str(request.data.get('password2', ''))
         data = cache.get(self._reset_key(reset_id))
         if not data or not data.get('verified'):
-            return Response({'detail': 'Verify your code before setting a new password.'}, status=status.HTTP_400_BAD_REQUEST)
+            return error_response('Verify your code before setting a new password.')
         user = User.objects.filter(pk=data['user_id']).filter(
             Q(username__iexact=username) | Q(email__iexact=username)
         ).first()
         if not user:
-            return Response({'detail': 'The username does not match this recovery request.'}, status=status.HTTP_400_BAD_REQUEST)
+            return error_response('The username does not match this recovery request.')
         if password != password2:
-            return Response({'detail': 'The new passwords do not match.'}, status=status.HTTP_400_BAD_REQUEST)
+            return error_response('The new passwords do not match.')
         try:
             validate_password(password, user=user)
         except ValidationError as validation_error:
-            return Response({'detail': ' '.join(validation_error.messages)}, status=status.HTTP_400_BAD_REQUEST)
+            return error_response(' '.join(validation_error.messages))
         def save_new_password():
             with transaction.atomic():
                 user.set_password(password)
@@ -247,9 +223,8 @@ class UserViewSet(viewsets.ModelViewSet):
                 user.refresh_from_db()
                 save_new_password()
             except OperationalError:
-                return Response(
-                    {'detail': 'The database is taking too long. Your password was not changed; please try again.'},
-                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                return service_unavailable(
+                    'The database is taking too long. Your password was not changed; please try again.'
                 )
         cache.delete(self._reset_key(reset_id))
         return Response({'detail': 'Password updated successfully. Sign in with your new password.'})

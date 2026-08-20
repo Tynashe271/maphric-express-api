@@ -27,6 +27,10 @@ jobs:
         pip install -r requirements.txt
         pip install coverage
     - name: Run Tests
+      env:
+        DEBUG: 'True'
+        SECRET_KEY: github-actions-test-key
+        DATABASE_URL: sqlite:///ci.sqlite3
       run: |
         coverage run manage.py test --settings=config.test_settings
     - name: Coverage Report

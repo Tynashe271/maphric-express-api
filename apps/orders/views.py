@@ -11,9 +11,21 @@ from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from apps.cart.models import CartItem
+from apps.common.querysets import scope_to_user
+from apps.common.responses import error_response, not_found
+from apps.common.text import display_name, format_order_reference
 from apps.products.models import Product, Review
 from .models import AdminActivity, DeliverySettings, Order, OrderItem, TransactionArchive
 from .serializers import OrderSerializer
+
+DELIVERY_SETTINGS_FIELDS = (
+    'delivery_fee',
+    'free_delivery_threshold',
+    'delivery_areas',
+    'estimated_minutes',
+    'opening_hours',
+    'delivery_policy',
+)
 
 
 class OrderViewSet(viewsets.ReadOnlyModelViewSet):
@@ -21,8 +33,20 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        queryset = Order.objects.filter(user=self.request.user).prefetch_related('items')
-        return Order.objects.prefetch_related('items') if self.request.user.is_staff else queryset
+        return scope_to_user(Order.objects.prefetch_related('items'), self.request.user)
+
+    @staticmethod
+    def _log_admin_activity(actor, action_name, description, **metadata):
+        return AdminActivity.objects.create(
+            actor=actor,
+            action=action_name,
+            description=description,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _get_archive(archive_id):
+        return TransactionArchive.objects.filter(pk=archive_id).first()
 
     @action(
         detail=True,
@@ -35,31 +59,17 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         next_status = str(request.data.get('status', '')).strip().lower()
         allowed = {value for value, _label in Order.Status.choices}
         if next_status not in allowed:
-            return Response(
-                {
-                    'detail': (
-                        'Choose a valid order status: '
-                        + ', '.join(sorted(allowed))
-                        + '.'
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return error_response('Choose a valid order status: ' + ', '.join(sorted(allowed)) + '.')
         previous = order.status
         order.status = next_status
         order.save(update_fields=['status', 'updated_at'])
-        AdminActivity.objects.create(
-            actor=request.user,
-            action='order_status_updated',
-            description=(
-                f'Changed order MAP-{order.id:06d} '
-                f'from {previous} to {next_status}.'
-            ),
-            metadata={
-                'order_id': order.id,
-                'previous_status': previous,
-                'status': next_status,
-            },
+        self._log_admin_activity(
+            request.user,
+            'order_status_updated',
+            f'Changed order {format_order_reference(order.id)} from {previous} to {next_status}.',
+            order_id=order.id,
+            previous_status=previous,
+            status=next_status,
         )
         return Response(OrderSerializer(order).data)
 
@@ -68,9 +78,8 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         settings_record, _ = DeliverySettings.objects.get_or_create(pk=1)
         if request.method == 'PUT':
             if not request.user.is_authenticated or not request.user.is_staff:
-                return Response({'detail': 'Administrator permission is required.'}, status=status.HTTP_403_FORBIDDEN)
-            fields = ('delivery_fee', 'free_delivery_threshold', 'delivery_areas', 'estimated_minutes', 'opening_hours', 'delivery_policy')
-            for field in fields:
+                return error_response('Administrator permission is required.', status.HTTP_403_FORBIDDEN)
+            for field in DELIVERY_SETTINGS_FIELDS:
                 if field in request.data:
                     setattr(settings_record, field, request.data[field])
             settings_record.updated_by = request.user
@@ -78,21 +87,15 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
                 settings_record.full_clean()
                 settings_record.save()
             except Exception as error:
-                return Response({'detail': str(error)}, status=status.HTTP_400_BAD_REQUEST)
-            AdminActivity.objects.create(
-                actor=request.user,
-                action='delivery_settings_updated',
-                description='Updated customer delivery settings.',
+                return error_response(str(error))
+            self._log_admin_activity(
+                request.user,
+                'delivery_settings_updated',
+                'Updated customer delivery settings.',
             )
-        return Response({
-            'delivery_fee': settings_record.delivery_fee,
-            'free_delivery_threshold': settings_record.free_delivery_threshold,
-            'delivery_areas': settings_record.delivery_areas,
-            'estimated_minutes': settings_record.estimated_minutes,
-            'opening_hours': settings_record.opening_hours,
-            'delivery_policy': settings_record.delivery_policy,
-            'updated_at': settings_record.updated_at,
-        })
+        payload = {field: getattr(settings_record, field) for field in DELIVERY_SETTINGS_FIELDS}
+        payload['updated_at'] = settings_record.updated_at
+        return Response(payload)
 
     @action(detail=False, methods=['post'])
     def checkout(self, request):
@@ -100,9 +103,9 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         serializer.is_valid(raise_exception=True)
         cart_items = list(CartItem.objects.filter(user=request.user).select_related('product'))
         if not cart_items:
-            return Response({'detail': 'Your cart is empty.'}, status=status.HTTP_400_BAD_REQUEST)
+            return error_response('Your cart is empty.')
         if any(item.quantity > item.product.stock_quantity for item in cart_items):
-            return Response({'detail': 'One or more products are out of stock.'}, status=status.HTTP_400_BAD_REQUEST)
+            return error_response('One or more products are out of stock.')
         with transaction.atomic():
             subtotal = sum(item.subtotal for item in cart_items)
             delivery = DeliverySettings.objects.filter(pk=1).first()
@@ -123,10 +126,7 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=['post'], permission_classes=[permissions.IsAdminUser], url_path='wipe-transactions')
     def wipe_transactions(self, request):
         if request.data.get('confirmation') != 'WIPE ALL TRANSACTIONS':
-            return Response(
-                {'detail': 'Type WIPE ALL TRANSACTIONS to confirm.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return error_response('Type WIPE ALL TRANSACTIONS to confirm.')
         with transaction.atomic():
             orders = Order.objects.all()
             count = orders.count()
@@ -138,11 +138,13 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
                 total_amount=total,
                 data=snapshot,
             )
-            AdminActivity.objects.create(
-                actor=request.user,
-                action='transactions_archived',
-                description=f'Archived and removed {count} transactions.',
-                metadata={'archive_id': archive.id, 'transaction_count': count, 'total_amount': str(total)},
+            self._log_admin_activity(
+                request.user,
+                'transactions_archived',
+                f'Archived and removed {count} transactions.',
+                archive_id=archive.id,
+                transaction_count=count,
+                total_amount=str(total),
             )
             for item in OrderItem.objects.filter(order__in=orders):
                 item.product.__class__.objects.filter(pk=item.product_id).update(
@@ -173,7 +175,7 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
                 'transaction_count': archive.transaction_count,
                 'total_amount': archive.total_amount,
                 'created_at': archive.created_at,
-                'created_by': archive.created_by.get_full_name() or archive.created_by.username if archive.created_by else 'System',
+                'created_by': display_name(archive.created_by),
             }
             for archive in archives
         ])
@@ -185,16 +187,16 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         url_path=r'transaction-archives/(?P<archive_id>\d+)/csv',
     )
     def transaction_archive_csv(self, request, archive_id=None):
-        archive = TransactionArchive.objects.filter(pk=archive_id).first()
+        archive = self._get_archive(archive_id)
         if not archive:
-            return Response({'detail': 'Archive not found.'}, status=status.HTTP_404_NOT_FOUND)
+            return not_found('Archive not found.')
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = f'attachment; filename="maphric-transactions-archive-{archive.id}.csv"'
         writer = csv.writer(response)
         writer.writerow(['Order number', 'Created', 'Customer', 'Phone', 'Status', 'Payment method', 'Payment status', 'Total'])
         for order in archive.data:
             writer.writerow([
-                f"MAP-{int(order['id']):06d}", order.get('created_at', ''), order.get('shipping_name', ''),
+                format_order_reference(order['id']), order.get('created_at', ''), order.get('shipping_name', ''),
                 order.get('shipping_phone', ''), order.get('status', ''), order.get('payment_method', ''),
                 order.get('payment_status', ''), order.get('total', '0.00'),
             ])
@@ -220,7 +222,7 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         return Response([
             {
                 'id': item.id,
-                'actor': item.actor.get_full_name() or item.actor.username if item.actor else 'System',
+                'actor': display_name(item.actor),
                 'action': item.action,
                 'description': item.description,
                 'metadata': item.metadata,
@@ -234,7 +236,7 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         return Response([
             {
                 'id': review.id,
-                'customer': review.user.get_full_name() or review.user.username,
+                'customer': display_name(review.user),
                 'product': review.product.name,
                 'rating': review.rating,
                 'comment': review.comment,
@@ -260,7 +262,7 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
             ],
             'products': list(Product.objects.all().values()),
         }
-        AdminActivity.objects.create(actor=request.user, action='backup_downloaded', description='Downloaded a store data backup.')
+        self._log_admin_activity(request.user, 'backup_downloaded', 'Downloaded a store data backup.')
         response = JsonResponse(payload, json_dumps_params={'indent': 2})
         response['Content-Disposition'] = 'attachment; filename="maphric-store-backup.json"'
         return response
@@ -272,9 +274,9 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         url_path=r'transaction-archives/(?P<archive_id>\d+)/pdf',
     )
     def transaction_archive_pdf(self, request, archive_id=None):
-        archive = TransactionArchive.objects.filter(pk=archive_id).first()
+        archive = self._get_archive(archive_id)
         if not archive:
-            return Response({'detail': 'Archive not found.'}, status=status.HTTP_404_NOT_FOUND)
+            return not_found('Archive not found.')
         output = BytesIO()
         pdf = canvas.Canvas(output, pagesize=A4)
         width, height = A4
@@ -295,7 +297,7 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         line(f'Transactions: {archive.transaction_count} | Total value: ${archive.total_amount}', 11, True)
         y -= 8
         for order in archive.data:
-            line(f"MAP-{int(order['id']):06d} | {order.get('status', '').upper()} | ${order.get('total', '0.00')}", 11, True)
+            line(f"{format_order_reference(order['id'])} | {order.get('status', '').upper()} | ${order.get('total', '0.00')}", 11, True)
             line(f"Customer: {order.get('shipping_name', '')} | Phone: {order.get('shipping_phone', '')}")
             line(f"Payment: {order.get('payment_method') or 'Not selected'} | {order.get('payment_status', 'unpaid')}")
             for item in order.get('items', []):
