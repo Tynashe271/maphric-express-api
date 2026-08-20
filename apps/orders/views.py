@@ -1,10 +1,13 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Count, F, Q, Sum
 from django.http import FileResponse, HttpResponse, JsonResponse
 from django.core.serializers.json import DjangoJSONEncoder
+from django.utils.dateparse import parse_date
 from io import BytesIO
 import json
 import csv
+import logging
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from rest_framework import permissions, status, viewsets
@@ -14,6 +17,17 @@ from apps.cart.models import CartItem
 from apps.products.models import Product, Review
 from .models import AdminActivity, DeliverySettings, Order, OrderItem, TransactionArchive
 from .serializers import OrderSerializer
+
+logger = logging.getLogger('maphric.orders')
+
+
+def order_number(archived_order):
+    """Format an archived order number, tolerating incomplete archive rows."""
+    try:
+        return f"MAP-{int(archived_order['id']):06d}"
+    except (KeyError, TypeError, ValueError):
+        logger.warning('Archived order has no usable id: %s', archived_order)
+        return 'MAP-UNKNOWN'
 
 
 class OrderViewSet(viewsets.ReadOnlyModelViewSet):
@@ -77,8 +91,16 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
             try:
                 settings_record.full_clean()
                 settings_record.save()
-            except Exception as error:
-                return Response({'detail': str(error)}, status=status.HTTP_400_BAD_REQUEST)
+            except DjangoValidationError as error:
+                payload = {'detail': ' '.join(error.messages)}
+                if hasattr(error, 'error_dict'):
+                    payload['errors'] = error.message_dict
+                return Response(payload, status=status.HTTP_400_BAD_REQUEST)
+            except (TypeError, ValueError) as error:
+                return Response(
+                    {'detail': f'One of the delivery settings has an unusable value: {error}'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             AdminActivity.objects.create(
                 actor=request.user,
                 action='delivery_settings_updated',
@@ -163,10 +185,16 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         end = request.query_params.get('to', '').strip()
         if query.isdigit():
             archives = archives.filter(pk=int(query))
-        if start:
-            archives = archives.filter(created_at__date__gte=start)
-        if end:
-            archives = archives.filter(created_at__date__lte=end)
+        for value, name, lookup in ((start, 'from', 'gte'), (end, 'to', 'lte')):
+            if not value:
+                continue
+            parsed = parse_date(value)
+            if parsed is None:
+                return Response(
+                    {'detail': f'Provide the {name} date as YYYY-MM-DD.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            archives = archives.filter(**{f'created_at__date__{lookup}': parsed})
         return Response([
             {
                 'id': archive.id,
@@ -194,7 +222,7 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         writer.writerow(['Order number', 'Created', 'Customer', 'Phone', 'Status', 'Payment method', 'Payment status', 'Total'])
         for order in archive.data:
             writer.writerow([
-                f"MAP-{int(order['id']):06d}", order.get('created_at', ''), order.get('shipping_name', ''),
+                order_number(order), order.get('created_at', ''), order.get('shipping_name', ''),
                 order.get('shipping_phone', ''), order.get('status', ''), order.get('payment_method', ''),
                 order.get('payment_status', ''), order.get('total', '0.00'),
             ])
@@ -295,7 +323,7 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         line(f'Transactions: {archive.transaction_count} | Total value: ${archive.total_amount}', 11, True)
         y -= 8
         for order in archive.data:
-            line(f"MAP-{int(order['id']):06d} | {order.get('status', '').upper()} | ${order.get('total', '0.00')}", 11, True)
+            line(f"{order_number(order)} | {order.get('status', '').upper()} | ${order.get('total', '0.00')}", 11, True)
             line(f"Customer: {order.get('shipping_name', '')} | Phone: {order.get('shipping_phone', '')}")
             line(f"Payment: {order.get('payment_method') or 'Not selected'} | {order.get('payment_status', 'unpaid')}")
             for item in order.get('items', []):

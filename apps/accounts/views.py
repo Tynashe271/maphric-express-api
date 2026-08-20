@@ -15,10 +15,13 @@ from rest_framework.authtoken.models import Token
 from rest_framework.throttling import AnonRateThrottle
 import json
 import hashlib
+import logging
 import secrets
 from urllib import error as urlerror, parse, request as urlrequest
 from .models import User
 from .serializers import UserSerializer, LoginSerializer, RegisterSerializer
+
+logger = logging.getLogger('maphric.accounts')
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
@@ -141,10 +144,18 @@ class UserViewSet(viewsets.ModelViewSet):
                 try:
                     provider_error = json.loads(sms_error.read().decode()).get('message', '')
                 except (json.JSONDecodeError, UnicodeDecodeError):
+                    logger.warning(
+                        'Twilio returned HTTP %s with an unreadable body.', sms_error.code, exc_info=True
+                    )
                     provider_error = ''
+                logger.warning(
+                    'Twilio rejected the %s verification for user %s: HTTP %s %s',
+                    channel, user.id, sms_error.code, provider_error,
+                )
                 detail = provider_error or 'The text message could not be sent. Choose email or try again.'
                 return Response({'detail': detail}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
             except Exception:
+                logger.exception('Twilio could not be reached to send a %s verification.', channel)
                 return Response({'detail': 'The verification service could not connect. Choose email or try again.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
             destination = f'phone ending {delivery_phone[-4:]}'
             code_hash = None
@@ -161,6 +172,7 @@ class UserViewSet(viewsets.ModelViewSet):
                     fail_silently=False,
                 )
             except Exception:
+                logger.exception('The password reset email for user %s could not be sent.', user.id)
                 return Response({'detail': 'The email could not be sent. Please try again or contact support.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
             parts = user.email.split('@')
             destination = f'{parts[0][:2]}***@{parts[1]}' if len(parts) == 2 else 'your registered email'
@@ -201,6 +213,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 check_result = json.loads(urlrequest.urlopen(check_request, timeout=10).read().decode())
                 code_is_valid = check_result.get('status') == 'approved'
             except Exception:
+                logger.exception('Twilio verification check failed for reset request %s.', reset_id)
                 return Response({'detail': 'The text verification service is unavailable. Try again.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         else:
             code_is_valid = check_password(code, data['code_hash'])
@@ -242,11 +255,17 @@ class UserViewSet(viewsets.ModelViewSet):
             self._clear_login_cache(user)
             save_new_password()
         except OperationalError:
+            logger.warning(
+                'The database connection dropped while resetting the password for user %s; retrying.',
+                user.id,
+                exc_info=True,
+            )
             close_old_connections()
             try:
                 user.refresh_from_db()
                 save_new_password()
             except OperationalError:
+                logger.exception('The password reset for user %s failed after a retry.', user.id)
                 return Response(
                     {'detail': 'The database is taking too long. Your password was not changed; please try again.'},
                     status=status.HTTP_503_SERVICE_UNAVAILABLE,
