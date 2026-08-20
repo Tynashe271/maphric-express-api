@@ -38,6 +38,10 @@ STORAGES = {
 
 PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
 
+# The assistant only calls the provider when a key is configured, so the suite
+# needs a placeholder to exercise the request path with a mocked transport.
+OPENAI_API_KEY = 'test-openai-key'
+
 CELERY_TASK_ALWAYS_EAGER = True
 
 REST_FRAMEWORK = {

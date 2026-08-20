@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from urllib import error, request
 
@@ -10,6 +11,8 @@ from rest_framework.views import APIView
 from apps.common.responses import bad_gateway, error_response
 from apps.common.text import format_order_reference
 from apps.products.models import Product
+
+logger = logging.getLogger('maphric.ai_assistant')
 
 
 class ShoppingAssistantView(APIView):
@@ -99,6 +102,13 @@ class ShoppingAssistantView(APIView):
                 prior.append({'role': role, 'content': content})
         prior.append({'role': 'user', 'content': message})
 
+        if not settings.OPENAI_API_KEY:
+            logger.warning('OPENAI_API_KEY is not set; answering from the catalogue instead.')
+            return Response({
+                'answer': self.catalogue_fallback(message, products, recent_orders),
+                'mode': 'catalogue',
+            })
+
         payload = {
             'model': settings.OPENAI_MODEL,
             'instructions': (
@@ -127,7 +137,22 @@ class ShoppingAssistantView(APIView):
         try:
             with request.urlopen(api_request, timeout=35) as api_response:
                 result = json.loads(api_response.read().decode('utf-8'))
-        except (error.HTTPError, error.URLError, TimeoutError, json.JSONDecodeError):
+        except error.HTTPError as http_error:
+            logger.warning(
+                'The AI provider returned HTTP %s; answering from the catalogue instead. Body: %s',
+                http_error.code,
+                self._error_body(http_error),
+            )
+            return Response({
+                'answer': self.catalogue_fallback(message, products, recent_orders),
+                'mode': 'catalogue',
+            })
+        except (error.URLError, TimeoutError, json.JSONDecodeError):
+            logger.warning(
+                'The AI provider could not be reached or returned an unreadable body; '
+                'answering from the catalogue instead.',
+                exc_info=True,
+            )
             return Response({
                 'answer': self.catalogue_fallback(message, products, recent_orders),
                 'mode': 'catalogue',
@@ -142,5 +167,13 @@ class ShoppingAssistantView(APIView):
                         texts.append(content.get('text', ''))
             answer = '\n'.join(texts).strip()
         if not answer:
+            logger.error('The AI provider returned no answer text: %s', result)
             return bad_gateway('The assistant returned no answer.')
         return Response({'answer': answer})
+
+    @staticmethod
+    def _error_body(http_error):
+        try:
+            return http_error.read().decode('utf-8', 'replace')[:500]
+        except OSError:
+            return '<unreadable>'

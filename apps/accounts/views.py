@@ -13,6 +13,7 @@ from django.db.models import Q
 from rest_framework.authtoken.models import Token
 from rest_framework.throttling import AnonRateThrottle
 import hashlib
+import logging
 import secrets
 from apps.common import verification
 from apps.common.responses import error_response, service_unavailable
@@ -20,9 +21,12 @@ from apps.common.text import mask_email, normalize_phone_number, to_internationa
 from .models import User
 from .serializers import UserSerializer, LoginSerializer, RegisterSerializer
 
+logger = logging.getLogger('maphric.accounts')
+
 MESSAGING_CHANNELS = {'sms', 'whatsapp'}
 LOGIN_CACHE_TIMEOUT = 300
 RESET_TIMEOUT = 300
+
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
@@ -133,6 +137,13 @@ class UserViewSet(viewsets.ModelViewSet):
             try:
                 verification.send_code(delivery_phone, channel)
             except verification.VerificationError as sms_error:
+                logger.warning(
+                    'Twilio could not send the %s verification for user %s: %s',
+                    channel,
+                    user.id,
+                    sms_error.provider_message or sms_error.detail,
+                    exc_info=True,
+                )
                 return service_unavailable(sms_error.provider_message or sms_error.detail)
             destination = f'phone ending {delivery_phone[-4:]}'
             code_hash = None
@@ -149,6 +160,7 @@ class UserViewSet(viewsets.ModelViewSet):
                     fail_silently=False,
                 )
             except Exception:
+                logger.exception('The password reset email for user %s could not be sent.', user.id)
                 return service_unavailable('The email could not be sent. Please try again or contact support.')
             destination = mask_email(user.email)
             code_hash = make_password(code)
@@ -177,6 +189,9 @@ class UserViewSet(viewsets.ModelViewSet):
             try:
                 code_is_valid = verification.check_code(data['phone'], code)
             except verification.VerificationError as check_error:
+                logger.warning(
+                    'Twilio verification check failed for reset request %s.', reset_id, exc_info=True
+                )
                 return service_unavailable(check_error.detail)
         else:
             code_is_valid = check_password(code, data['code_hash'])
@@ -218,11 +233,17 @@ class UserViewSet(viewsets.ModelViewSet):
             self._clear_login_cache(user)
             save_new_password()
         except OperationalError:
+            logger.warning(
+                'The database connection dropped while resetting the password for user %s; retrying.',
+                user.id,
+                exc_info=True,
+            )
             close_old_connections()
             try:
                 user.refresh_from_db()
                 save_new_password()
             except OperationalError:
+                logger.exception('The password reset for user %s failed after a retry.', user.id)
                 return service_unavailable(
                     'The database is taking too long. Your password was not changed; please try again.'
                 )

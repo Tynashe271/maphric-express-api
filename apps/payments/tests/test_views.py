@@ -6,7 +6,7 @@ from rest_framework.test import APIClient
 
 from apps.factories import create_admin, create_order, create_user
 from apps.orders.models import Order
-from apps.payments.views import gateway
+from apps.payments.views import GatewayNotConfigured, gateway
 
 INITIATE_URL = '/api/v1/payments/initiate/'
 CALLBACK_URL = '/api/v1/payments/callback/'
@@ -162,25 +162,27 @@ class InitiatePaymentTests(TestCase):
 
         self.assertEqual(response.status_code, 502)
 
-    def test_gateway_failure_returns_bad_gateway(self):
-        with mock.patch('apps.payments.views.gateway', side_effect=RuntimeError('not configured')):
+    def test_missing_credentials_return_service_unavailable(self):
+        with mock.patch('apps.payments.views.gateway', side_effect=GatewayNotConfigured('nope')):
             response = self.client.post(INITIATE_URL, {
                 'order_id': self.order.pk,
                 'method': 'ecocash',
                 'phone': '0771234567',
             }, format='json')
 
-        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.status_code, 503)
 
-    def test_unexpected_error_returns_bad_gateway(self):
-        with mock.patch('apps.payments.views.Order.objects.filter', side_effect=RuntimeError('db down')):
+    def test_unexpected_error_is_not_reported_as_a_gateway_failure(self):
+        self.client.raise_request_exception = False
+
+        with mock.patch('apps.payments.views.scope_to_user', side_effect=RuntimeError('db down')):
             response = self.client.post(INITIATE_URL, {
                 'order_id': self.order.pk,
                 'method': 'ecocash',
                 'phone': '0771234567',
             }, format='json')
 
-        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.status_code, 500)
 
     def test_staff_can_pay_for_any_order(self):
         other_order = create_order(create_user(username='other', phone_number='0770000002'))

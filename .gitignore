@@ -4,6 +4,7 @@ __pycache__/
 *.py[cod]
 staticfiles/
 media/
+venv/
 .venv/
 .coverage
 htmlcov/

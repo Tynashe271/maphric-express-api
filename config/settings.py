@@ -16,8 +16,8 @@ SECRET_KEY = config('SECRET_KEY', default='django-insecure-your-secret-key-here'
 # deployment values such as DEBUG=release as False.
 DEBUG = config(
     'DEBUG',
-    default=False,
-    cast=lambda value: value.strip().lower() in {'1', 'true', 'yes', 'on'},
+    default='False',
+    cast=lambda value: str(value).strip().lower() in {'1', 'true', 'yes', 'on'},
 )
 
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1').split(',')
@@ -160,6 +160,32 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.UserRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {'anon': '100/hour', 'user': '1000/hour'},
+    'EXCEPTION_HANDLER': 'config.exception_handlers.api_exception_handler',
+}
+
+# Logging. Application failures are written to stdout so hosting platforms such
+# as Render collect them; LOG_LEVEL raises or lowers application verbosity.
+LOG_LEVEL = config('LOG_LEVEL', default='INFO').upper()
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'standard': {
+            'format': '[{asctime}] {levelname} {name}: {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'standard',
+        },
+    },
+    'root': {'handlers': ['console'], 'level': 'WARNING'},
+    'loggers': {
+        'django.request': {'handlers': ['console'], 'level': 'ERROR', 'propagate': False},
+        'maphric': {'handlers': ['console'], 'level': LOG_LEVEL, 'propagate': False},
+    },
 }
 
 # CORS settings
