@@ -1,12 +1,11 @@
 from rest_framework import serializers
-from apps.products.serializers import ProductSerializer
-from apps.products.models import Product
+from apps.products.serializers import ActiveProductField, ProductSerializer
 from .models import CartItem
 
 
 class CartItemSerializer(serializers.ModelSerializer):
     product = ProductSerializer(read_only=True)
-    product_id = serializers.PrimaryKeyRelatedField(source='product', queryset=Product.objects.filter(is_active=True), write_only=True)
+    product_id = ActiveProductField()
     subtotal = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
 
     class Meta:
