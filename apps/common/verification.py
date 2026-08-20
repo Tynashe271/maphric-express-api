@@ -37,8 +37,7 @@ def _post(endpoint, payload, http_detail, connection_detail):
     credentials = f'{settings.TWILIO_ACCOUNT_SID}:{settings.TWILIO_AUTH_TOKEN}'.encode()
     api_request.add_header('Authorization', f'Basic {base64.b64encode(credentials).decode()}')
     try:
-        with urlrequest.urlopen(api_request, timeout=REQUEST_TIMEOUT) as api_response:
-            raw = api_response.read().decode()
+        raw = urlrequest.urlopen(api_request, timeout=REQUEST_TIMEOUT).read().decode()
     except urlerror.HTTPError as http_error:
         try:
             provider_message = json.loads(http_error.read().decode()).get('message', '')

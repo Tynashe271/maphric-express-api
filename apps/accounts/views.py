@@ -15,7 +15,6 @@ from rest_framework.throttling import AnonRateThrottle
 import hashlib
 import secrets
 from apps.common import verification
-from apps.common.querysets import scope_to_user
 from apps.common.responses import error_response, service_unavailable
 from apps.common.text import mask_email, normalize_phone_number, to_international_phone_number
 from .models import User
@@ -37,7 +36,9 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Prevent API users from accessing other users' profiles."""
-        return scope_to_user(User.objects.all(), self.request.user, field='pk')
+        if self.request.user.is_staff:
+            return User.objects.all()
+        return User.objects.filter(pk=self.request.user.pk)
 
     def create(self, request, *args, **kwargs):
         """Accounts must be created through the validated register endpoint."""

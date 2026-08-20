@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from apps.common.querysets import scope_to_user
 from apps.common.responses import bad_gateway, error_response, not_found
-from apps.common.text import format_order_reference, mask_email, normalize_phone_number
+from apps.common.text import format_order_reference, normalize_phone_number
 from apps.orders.models import Order
 
 TRUE_VALUES = {'1', 'true', 'yes', 'on'}
@@ -142,5 +142,8 @@ class PaymentConfigView(APIView):
         )
         values = {key: bool(env(key)) for key in keys}
         email = env('PAYNOW_AUTH_EMAIL')
-        values['PAYNOW_AUTH_EMAIL_MASKED'] = mask_email(email, visible=1, fallback='') if email else ''
+        at_sign = email.find('@')
+        values['PAYNOW_AUTH_EMAIL_MASKED'] = (
+            f'{email[:1]}{"*" * max(0, at_sign - 2)}{email[at_sign - 1:]}' if at_sign > -1 else ''
+        )
         return Response(values)
