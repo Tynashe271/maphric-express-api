@@ -2,8 +2,8 @@ from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from .models import DeliverySettings, TransactionArchive
-from .views import order_number
+from ..models import DeliverySettings, TransactionArchive
+from ..views import order_number
 
 User = get_user_model()
 

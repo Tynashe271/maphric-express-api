@@ -5,3 +5,5 @@ staticfiles/
 media/
 venv/
 .venv/
+.coverage
+htmlcov/
