@@ -11,15 +11,25 @@ from apps.factories import create_order, create_product, create_user
 CHAT_URL = '/api/v1/ai/chat/'
 
 
+def chat_response(content=None, tool_calls=None):
+    """Build a Chat Completions-shaped API payload (OpenAI/DeepSeek compatible)."""
+    message = {'role': 'assistant'}
+    if content is not None:
+        message['content'] = content
+    if tool_calls is not None:
+        message['tool_calls'] = tool_calls
+    return {'choices': [{'message': message}]}
+
+
 def function_call_response(name, arguments, call_id='call_1'):
-    return {
-        'output': [
-            {'type': 'function_call', 'call_id': call_id, 'name': name, 'arguments': json.dumps(arguments)},
-        ],
-    }
+    return chat_response(tool_calls=[{
+        'id': call_id,
+        'type': 'function',
+        'function': {'name': name, 'arguments': json.dumps(arguments)},
+    }])
 
 
-def openai_response(payload):
+def provider_response(payload):
     api_response = mock.MagicMock()
     api_response.read.return_value = json.dumps(payload).encode()
     context = mock.MagicMock()
@@ -40,7 +50,7 @@ class ShoppingAssistantViewTests(TestCase):
             with mock.patch(target, side_effect=side_effect) as urlopen:
                 response = self.client.post(CHAT_URL, payload, format='json')
         else:
-            with mock.patch(target, return_value=openai_response(api_result or {})) as urlopen:
+            with mock.patch(target, return_value=provider_response(api_result or {})) as urlopen:
                 response = self.client.post(CHAT_URL, payload, format='json')
         self.urlopen = urlopen
         return response
@@ -60,25 +70,13 @@ class ShoppingAssistantViewTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
 
-    def test_answer_from_output_text_is_returned(self):
-        response = self._post({'message': 'Do you sell maize meal?'}, {'output_text': 'Yes, we do.'})
+    def test_answer_from_message_content_is_returned(self):
+        response = self._post({'message': 'Do you sell maize meal?'}, chat_response(content='Yes, we do.'))
 
         self.assertEqual(response.data, {'answer': 'Yes, we do.'})
 
-    def test_answer_is_assembled_from_output_content(self):
-        api_result = {
-            'output': [
-                {'content': [{'type': 'output_text', 'text': 'Yes,'}, {'type': 'refusal', 'text': 'ignored'}]},
-                {'content': [{'type': 'output_text', 'text': 'we do.'}]},
-            ]
-        }
-
-        response = self._post({'message': 'Do you sell maize meal?'}, api_result)
-
-        self.assertEqual(response.data, {'answer': 'Yes,\nwe do.'})
-
     def test_empty_answer_returns_bad_gateway(self):
-        response = self._post({'message': 'Do you sell maize meal?'}, {'output': []})
+        response = self._post({'message': 'Do you sell maize meal?'}, chat_response(content=''))
 
         self.assertEqual(response.status_code, 502)
 
@@ -114,39 +112,40 @@ class ShoppingAssistantViewTests(TestCase):
             {'role': 'assistant', 'content': 'Earlier answer'},
         ]
 
-        self._post({'message': 'And the price?', 'history': history}, {'output_text': 'USD 4.50'})
+        self._post({'message': 'And the price?', 'history': history}, chat_response(content='USD 4.50'))
 
         sent = json.loads(self.urlopen.call_args.args[0].data.decode())
-        self.assertEqual(sent['input'], [
+        self.assertEqual(sent['messages'][0]['role'], 'system')
+        self.assertEqual(sent['messages'][1:], [
             {'role': 'assistant', 'content': 'Earlier answer'},
             {'role': 'user', 'content': 'And the price?'},
         ])
-        self.assertIn('Maize Meal | Groceries | USD 4.50 | stock 10', sent['instructions'])
-        self.assertIn(f'HHB-{order.id:06d}', sent['instructions'])
+        self.assertIn('Maize Meal | Groceries | USD 4.50 | stock 10', sent['messages'][0]['content'])
+        self.assertIn(f'HHB-{order.id:06d}', sent['messages'][0]['content'])
 
     def test_prompt_describes_an_empty_store(self):
         self.product.delete()
 
-        self._post({'message': 'Anything in stock?'}, {'output_text': 'Not yet.'})
+        self._post({'message': 'Anything in stock?'}, chat_response(content='Not yet.'))
 
         sent = json.loads(self.urlopen.call_args.args[0].data.decode())
-        self.assertIn('No products have been added yet.', sent['instructions'])
-        self.assertIn('No customer orders yet.', sent['instructions'])
+        self.assertIn('No products have been added yet.', sent['messages'][0]['content'])
+        self.assertIn('No customer orders yet.', sent['messages'][0]['content'])
 
     def test_history_is_limited_to_the_last_six_entries(self):
         history = [{'role': 'user', 'content': f'question {index}'} for index in range(10)]
 
-        self._post({'message': 'latest', 'history': history}, {'output_text': 'ok'})
+        self._post({'message': 'latest', 'history': history}, chat_response(content='ok'))
 
         sent = json.loads(self.urlopen.call_args.args[0].data.decode())
-        self.assertEqual(len(sent['input']), 7)
-        self.assertEqual(sent['input'][0]['content'], 'question 4')
+        self.assertEqual(len(sent['messages']), 8)
+        self.assertEqual(sent['messages'][1]['content'], 'question 4')
 
     def test_prompt_offers_the_add_to_cart_tool(self):
-        self._post({'message': 'Do you sell maize meal?'}, {'output_text': 'Yes, we do.'})
+        self._post({'message': 'Do you sell maize meal?'}, chat_response(content='Yes, we do.'))
 
         sent = json.loads(self.urlopen.call_args.args[0].data.decode())
-        self.assertEqual(sent['tools'][0]['name'], 'add_to_cart')
+        self.assertEqual(sent['tools'][0]['function']['name'], 'add_to_cart')
 
     def test_tool_call_adds_matching_items_to_the_cart_and_flags_redirect(self):
         api_result = function_call_response('add_to_cart', {

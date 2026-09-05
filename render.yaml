@@ -20,8 +20,12 @@ services:
         value: https://harvesthub-grocery.web.app
       - key: DATABASE_URL
         sync: false
-      - key: OPENAI_API_KEY
+      - key: AI_API_KEY
         sync: false
+      - key: AI_API_BASE_URL
+        value: https://api.deepseek.com/v1
+      - key: AI_MODEL
+        value: deepseek-chat
       - key: EMAIL_HOST_USER
         sync: false
       - key: EMAIL_HOST_PASSWORD

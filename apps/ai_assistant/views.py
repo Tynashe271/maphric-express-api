@@ -15,37 +15,39 @@ from apps.products.models import Product
 
 ADD_TO_CART_TOOL = {
     'type': 'function',
-    'name': 'add_to_cart',
-    'description': (
-        'Add grocery items the customer wants to buy to their shopping cart. '
-        'Call this as soon as the customer lists specific products (and, '
-        'optionally, quantities) they want to purchase, even mid-conversation '
-        "and even if they haven't finished shopping. Only use product names "
-        'from the supplied catalogue.'
-    ),
-    'parameters': {
-        'type': 'object',
-        'properties': {
-            'items': {
-                'type': 'array',
-                'description': "Products the customer wants added to their cart.",
+    'function': {
+        'name': 'add_to_cart',
+        'description': (
+            'Add grocery items the customer wants to buy to their shopping cart. '
+            'Call this as soon as the customer lists specific products (and, '
+            'optionally, quantities) they want to purchase, even mid-conversation '
+            "and even if they haven't finished shopping. Only use product names "
+            'from the supplied catalogue.'
+        ),
+        'parameters': {
+            'type': 'object',
+            'properties': {
                 'items': {
-                    'type': 'object',
-                    'properties': {
-                        'product_name': {
-                            'type': 'string',
-                            'description': 'Catalogue product name the customer wants.',
+                    'type': 'array',
+                    'description': "Products the customer wants added to their cart.",
+                    'items': {
+                        'type': 'object',
+                        'properties': {
+                            'product_name': {
+                                'type': 'string',
+                                'description': 'Catalogue product name the customer wants.',
+                            },
+                            'quantity': {
+                                'type': 'integer',
+                                'description': 'How many units. Defaults to 1 if not stated.',
+                            },
                         },
-                        'quantity': {
-                            'type': 'integer',
-                            'description': 'How many units. Defaults to 1 if not stated.',
-                        },
+                        'required': ['product_name', 'quantity'],
                     },
-                    'required': ['product_name', 'quantity'],
                 },
             },
+            'required': ['items'],
         },
-        'required': ['items'],
     },
 }
 
@@ -216,17 +218,9 @@ class ShoppingAssistantView(APIView):
             for o in recent_orders
         ) or 'No customer orders yet.'
 
-        prior = []
-        for item in history[-6:]:
-            role = item.get('role')
-            content = str(item.get('content', ''))[:800]
-            if role in {'user', 'assistant'} and content:
-                prior.append({'role': role, 'content': content})
-        prior.append({'role': 'user', 'content': message})
-
-        payload = {
-            'model': settings.OPENAI_MODEL,
-            'instructions': (
+        system_message = {
+            'role': 'system',
+            'content': (
                 'You are the HarvestHub customer shopping assistant for the Bradfield, '
                 'Bulawayo grocery shop. Answer customer queries, shopping requests, product '
                 'questions, order questions, delivery questions, and store questions. Use only '
@@ -239,15 +233,26 @@ class ShoppingAssistantView(APIView):
                 'just describing them in text.\n\n'
                 f'CURRENT CATALOGUE:\n{catalogue}\n\nCUSTOMER ORDERS:\n{orders}'
             ),
-            'input': prior,
+        }
+        messages = [system_message]
+        for item in history[-6:]:
+            role = item.get('role')
+            content = str(item.get('content', ''))[:800]
+            if role in {'user', 'assistant'} and content:
+                messages.append({'role': role, 'content': content})
+        messages.append({'role': 'user', 'content': message})
+
+        payload = {
+            'model': settings.AI_MODEL,
+            'messages': messages,
             'tools': [ADD_TO_CART_TOOL],
-            'max_output_tokens': 500,
+            'max_tokens': 500,
         }
         api_request = request.Request(
-            'https://api.openai.com/v1/responses',
+            f'{settings.AI_API_BASE_URL.rstrip("/")}/chat/completions',
             data=json.dumps(payload).encode('utf-8'),
             headers={
-                'Authorization': f'Bearer {settings.OPENAI_API_KEY}',
+                'Authorization': f'Bearer {settings.AI_API_KEY}',
                 'Content-Type': 'application/json',
             },
             method='POST',
@@ -272,16 +277,16 @@ class ShoppingAssistantView(APIView):
                 'mode': 'catalogue',
             })
 
+        choices = result.get('choices') or []
+        response_message = choices[0].get('message', {}) if choices else {}
+        tool_calls = response_message.get('tool_calls') or []
         tool_call = next(
-            (
-                output for output in result.get('output', [])
-                if output.get('type') == 'function_call' and output.get('name') == 'add_to_cart'
-            ),
+            (call for call in tool_calls if call.get('function', {}).get('name') == 'add_to_cart'),
             None,
         )
         if tool_call is not None:
             try:
-                arguments = json.loads(tool_call.get('arguments') or '{}')
+                arguments = json.loads(tool_call['function'].get('arguments') or '{}')
             except json.JSONDecodeError:
                 arguments = {}
             added, unavailable = self.add_items_to_cart(
@@ -294,14 +299,7 @@ class ShoppingAssistantView(APIView):
                 'redirect_to_cart': bool(added),
             })
 
-        answer = result.get('output_text')
-        if not answer:
-            texts = []
-            for output in result.get('output', []):
-                for content in output.get('content', []):
-                    if content.get('type') == 'output_text':
-                        texts.append(content.get('text', ''))
-            answer = '\n'.join(texts).strip()
+        answer = (response_message.get('content') or '').strip()
         if not answer:
             return bad_gateway('The assistant returned no answer.')
         return Response({'answer': answer})

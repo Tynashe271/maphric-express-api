@@ -216,6 +216,8 @@ ECOCASH_API_KEY = config('ECOCASH_API_KEY', default='')
 INNBUCKS_API_URL = config('INNBUCKS_API_URL', default='')
 INNBUCKS_API_KEY = config('INNBUCKS_API_KEY', default='')
 
-# AI Assistant settings
-OPENAI_API_KEY = config('OPENAI_API_KEY', default='')
-OPENAI_MODEL = config('OPENAI_MODEL', default='gpt-5.6-luna')
+# AI Assistant settings - any OpenAI-compatible Chat Completions provider.
+# Defaults to DeepSeek; set AI_API_BASE_URL/AI_MODEL to point elsewhere.
+AI_API_KEY = config('AI_API_KEY', default='')
+AI_API_BASE_URL = config('AI_API_BASE_URL', default='https://api.deepseek.com/v1')
+AI_MODEL = config('AI_MODEL', default='deepseek-chat')
