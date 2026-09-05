@@ -30,7 +30,7 @@ class CatalogueFallbackTests(TestCase):
 
         answer = fallback('track my order', self.products, [order])
 
-        self.assertIn(f'MAP-{order.id:06d}', answer)
+        self.assertIn(f'HHB-{order.id:06d}', answer)
         self.assertIn('shipped', answer)
         self.assertIn('9.00', answer)
 

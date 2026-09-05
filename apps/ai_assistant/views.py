@@ -23,7 +23,7 @@ class ShoppingAssistantView(APIView):
 
         if any(word in query for word in ('delivery', 'deliver', 'shipping', 'arrive')):
             return (
-                'Maphric Express offers local delivery from Bradfield across Bulawayo. '
+                'HarvestHub offers local delivery from Bradfield across Bulawayo. '
                 'After checkout, use your MAP order number on Track delivery to see the '
                 'latest status and estimated arrival time.'
             )
@@ -102,7 +102,7 @@ class ShoppingAssistantView(APIView):
         payload = {
             'model': settings.OPENAI_MODEL,
             'instructions': (
-                'You are the Maphric Express customer shopping assistant for the Bradfield, '
+                'You are the HarvestHub customer shopping assistant for the Bradfield, '
                 'Bulawayo grocery shop. Answer customer queries, shopping requests, product '
                 'questions, order questions, delivery questions, and store questions. Use only '
                 'the supplied catalogue and order data for availability, price, stock, or order '

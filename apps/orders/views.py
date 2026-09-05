@@ -191,7 +191,7 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         if not archive:
             return not_found('Archive not found.')
         response = HttpResponse(content_type='text/csv')
-        response['Content-Disposition'] = f'attachment; filename="maphric-transactions-archive-{archive.id}.csv"'
+        response['Content-Disposition'] = f'attachment; filename="harvesthub-transactions-archive-{archive.id}.csv"'
         writer = csv.writer(response)
         writer.writerow(['Order number', 'Created', 'Customer', 'Phone', 'Status', 'Payment method', 'Payment status', 'Total'])
         for order in archive.data:
@@ -264,7 +264,7 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         }
         self._log_admin_activity(request.user, 'backup_downloaded', 'Downloaded a store data backup.')
         response = JsonResponse(payload, json_dumps_params={'indent': 2})
-        response['Content-Disposition'] = 'attachment; filename="maphric-store-backup.json"'
+        response['Content-Disposition'] = 'attachment; filename="harvesthub-store-backup.json"'
         return response
 
     @action(
@@ -291,7 +291,7 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
             pdf.drawString(44, y, str(text)[:105])
             y -= size + 7
 
-        line('MAPHRIC INVESTMENTS T/A ENGEN BRADFIELD EXPRESS SHOP', 13, True)
+        line('HARVESTHUB', 13, True)
         line('Archived Transaction Report', 16, True)
         line(f'Archive #{archive.id} | Created: {archive.created_at:%d %b %Y %H:%M}')
         line(f'Transactions: {archive.transaction_count} | Total value: ${archive.total_amount}', 11, True)
@@ -305,4 +305,4 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
             y -= 8
         pdf.save()
         output.seek(0)
-        return FileResponse(output, as_attachment=True, filename=f'maphric-transactions-archive-{archive.id}.pdf')
+        return FileResponse(output, as_attachment=True, filename=f'harvesthub-transactions-archive-{archive.id}.pdf')

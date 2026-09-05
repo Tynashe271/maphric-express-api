@@ -71,7 +71,7 @@ class InitiatePaymentView(APIView):
                 return error_response('The order account needs an email address before EcoCash payment.')
             reference = format_order_reference(order.id)
             payment = paynow.create_payment(reference, auth_email)
-            payment.add(f'Maphric Express order {reference}', float(order.total))
+            payment.add(f'HarvestHub order {reference}', float(order.total))
             response = paynow.send_mobile(payment, phone, 'ecocash')
         except Exception:
             return bad_gateway(

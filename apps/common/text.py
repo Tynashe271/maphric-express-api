@@ -1,6 +1,6 @@
 """Formatting and normalisation helpers shared by the API apps."""
 
-ORDER_REFERENCE_PREFIX = 'MAP'
+ORDER_REFERENCE_PREFIX = 'HHB'
 LOCAL_DIALLING_CODE = '+263'
 
 
@@ -15,7 +15,7 @@ def to_international_phone_number(phone):
 
 
 def format_order_reference(order_id):
-    """Render the customer-facing order number, for example MAP-000123."""
+    """Render the customer-facing order number, for example HHB-000123."""
     return f'{ORDER_REFERENCE_PREFIX}-{int(order_id):06d}'
 
 

@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: maphric-express-api
+    name: harvesthub-api
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt && python manage.py collectstatic --no-input
@@ -17,7 +17,7 @@ services:
       - key: ALLOWED_HOSTS
         value: .onrender.com
       - key: CORS_ALLOWED_ORIGINS
-        value: https://maphric-express-grocery.t08406096.chatgpt.site
+        value: https://harvesthub-grocery.t08406096.chatgpt.site
       - key: DATABASE_URL
         sync: false
       - key: OPENAI_API_KEY
@@ -43,6 +43,6 @@ services:
       - key: PAYNOW_TEST_MODE
         value: "False"
       - key: PAYNOW_RETURN_URL
-        value: https://maphric-express-grocery.t08406096.chatgpt.site
+        value: https://harvesthub-grocery.t08406096.chatgpt.site
       - key: PAYNOW_RESULT_URL
-        value: https://maphric-express-api.onrender.com/api/v1/payments/callback/
+        value: https://harvesthub-api.onrender.com/api/v1/payments/callback/

@@ -19,8 +19,8 @@ class TextHelperTests(SimpleTestCase):
         self.assertEqual(to_international_phone_number('+263772910496'), '+263772910496')
 
     def test_format_order_reference_pads_to_six_digits(self):
-        self.assertEqual(format_order_reference(123), 'MAP-000123')
-        self.assertEqual(format_order_reference('7'), 'MAP-000007')
+        self.assertEqual(format_order_reference(123), 'HHB-000123')
+        self.assertEqual(format_order_reference('7'), 'HHB-000007')
 
     def test_mask_email_hides_local_part(self):
         self.assertEqual(mask_email('customer@example.com'), 'cu***@example.com')

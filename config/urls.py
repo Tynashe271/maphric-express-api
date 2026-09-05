@@ -7,21 +7,28 @@ from rest_framework import permissions
 from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
 
-admin.site.site_header = 'Maphric Investments T/A Engen Bradfield Express Shop Administration'
-admin.site.site_title = 'Maphric Investments Administration'
+admin.site.site_header = 'HarvestHub Administration'
+admin.site.site_title = 'HarvestHub Investments Administration'
 admin.site.index_title = 'Engen Bradfield Express Shop'
 
 schema_view = get_schema_view(
     openapi.Info(
-        title="Maphric Investments T/A Engen Bradfield Express Shop API",
+        title="HarvestHub API",
         default_version='v1',
-        description="API documentation for Maphric Investments T/A Engen Bradfield Express Shop.",
+        description="API documentation for HarvestHub.",
     ),
     public=True,
     permission_classes=(permissions.AllowAny,),
 )
 
 urlpatterns = [
+    path('', lambda request: JsonResponse({
+        'name': 'HarvestHub API',
+        'status': 'running',
+        'health': '/health/',
+        'admin': '/admin/',
+        'api': '/api/v1/',
+    }), name='api-root'),
     path('health/', lambda request: JsonResponse({'status': 'ok'}), name='health'),
     path('admin/', admin.site.urls),
     path('api/v1/accounts/', include('apps.accounts.urls')),

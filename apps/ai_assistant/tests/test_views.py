@@ -113,7 +113,7 @@ class ShoppingAssistantViewTests(TestCase):
             {'role': 'user', 'content': 'And the price?'},
         ])
         self.assertIn('Maize Meal | Groceries | USD 4.50 | stock 10', sent['instructions'])
-        self.assertIn(f'MAP-{order.id:06d}', sent['instructions'])
+        self.assertIn(f'HHB-{order.id:06d}', sent['instructions'])
 
     def test_prompt_describes_an_empty_store(self):
         self.product.delete()

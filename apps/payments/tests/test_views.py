@@ -137,8 +137,8 @@ class InitiatePaymentTests(TestCase):
         self.assertEqual(self.order.payment_method, 'EcoCash')
         self.assertEqual(self.order.payment_status, 'pending')
         self.assertEqual(self.order.paynow_poll_url, 'https://paynow.example/poll/1')
-        self.assertEqual(fake.reference, f'MAP-{self.order.id:06d}')
-        self.assertEqual(fake.payment.lines, [(f'Maphric Express order MAP-{self.order.id:06d}', 9.0)])
+        self.assertEqual(fake.reference, f'HHB-{self.order.id:06d}')
+        self.assertEqual(fake.payment.lines, [(f'HarvestHub order HHB-{self.order.id:06d}', 9.0)])
         self.assertEqual(fake.sent, ('0771234567', 'ecocash'))
 
     def test_test_mode_uses_the_paynow_sandbox_number(self):

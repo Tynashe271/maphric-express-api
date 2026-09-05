@@ -142,7 +142,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 return error_response('This account has no recovery email. Choose text message or contact support.')
             try:
                 send_mail(
-                    'Your Maphric Express password reset code',
+                    'Your HarvestHub password reset code',
                     f'Your verification code is {code}. It expires in 5 minutes. If you did not request this, ignore this email.',
                     settings.DEFAULT_FROM_EMAIL,
                     [user.email],

@@ -285,7 +285,7 @@ class TransactionArchiveTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response['Content-Type'], 'text/csv')
         body = response.content.decode()
-        self.assertIn('MAP-000007', body)
+        self.assertIn('HHB-000007', body)
         self.assertIn('Test Shopper', body)
 
     def test_pdf_export_returns_a_pdf_attachment(self):
