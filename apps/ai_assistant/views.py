@@ -128,8 +128,12 @@ class ShoppingAssistantView(APIView):
             segment = segment.strip()
             if not segment:
                 continue
-            match = re.match(r'(\d+)\s*(?:x\s*)?(.+)', segment)
-            quantity, name = (int(match.group(1)), match.group(2)) if match else (1, segment)
+            match = re.search(r'\b(\d+)\b', segment)
+            if match:
+                quantity = int(match.group(1))
+                name = (segment[:match.start()] + ' ' + segment[match.end():]).strip()
+            else:
+                quantity, name = 1, segment
             name = re.sub(r'^(?:a|an|some|of|to my cart|to cart)\b\s*', '', name.strip()).strip()
             name = re.sub(r'\b(?:to my cart|to the cart|to cart)$', '', name).strip()
             if name and any(name in p.name.lower() or p.name.lower() in name for p in products):

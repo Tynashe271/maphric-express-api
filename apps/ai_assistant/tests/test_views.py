@@ -220,6 +220,15 @@ class ShoppingAssistantViewTests(TestCase):
         self.assertTrue(response.data['redirect_to_cart'])
         self.assertEqual(CartItem.objects.get(user=self.user, product=self.product).quantity, 1)
 
+    def test_fallback_extracts_a_quantity_stated_mid_sentence(self):
+        response = self._post(
+            {'message': 'I want to buy 3 loaves of maize meal'},
+            side_effect=error.URLError('offline'),
+        )
+
+        self.assertTrue(response.data['redirect_to_cart'])
+        self.assertEqual(CartItem.objects.get(user=self.user, product=self.product).quantity, 3)
+
     def test_provider_error_without_shopping_intent_uses_the_plain_fallback(self):
         response = self._post({'message': 'Do you sell maize meal?'}, side_effect=error.URLError('offline'))
 
