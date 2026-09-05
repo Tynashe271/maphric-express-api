@@ -1,3 +1,4 @@
+import difflib
 import json
 import re
 from urllib import error, request
@@ -7,13 +8,133 @@ from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.cart.models import CartItem
 from apps.common.responses import bad_gateway, error_response
 from apps.common.text import format_order_reference
 from apps.products.models import Product
 
+ADD_TO_CART_TOOL = {
+    'type': 'function',
+    'name': 'add_to_cart',
+    'description': (
+        'Add grocery items the customer wants to buy to their shopping cart. '
+        'Call this as soon as the customer lists specific products (and, '
+        'optionally, quantities) they want to purchase, even mid-conversation '
+        "and even if they haven't finished shopping. Only use product names "
+        'from the supplied catalogue.'
+    ),
+    'parameters': {
+        'type': 'object',
+        'properties': {
+            'items': {
+                'type': 'array',
+                'description': "Products the customer wants added to their cart.",
+                'items': {
+                    'type': 'object',
+                    'properties': {
+                        'product_name': {
+                            'type': 'string',
+                            'description': 'Catalogue product name the customer wants.',
+                        },
+                        'quantity': {
+                            'type': 'integer',
+                            'description': 'How many units. Defaults to 1 if not stated.',
+                        },
+                    },
+                    'required': ['product_name', 'quantity'],
+                },
+            },
+        },
+        'required': ['items'],
+    },
+}
+
 
 class ShoppingAssistantView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+
+    @staticmethod
+    def match_product(query, products, by_name):
+        """Resolve free-form text like 'brown bread' to a catalogue product."""
+        product = by_name.get(query)
+        if product is not None:
+            return product
+        close = difflib.get_close_matches(query, by_name.keys(), n=1, cutoff=0.5)
+        if close:
+            return by_name[close[0]]
+        contains = [p for p in products if query in p.name.lower() or p.name.lower() in query]
+        return contains[0] if contains else None
+
+    @classmethod
+    def add_items_to_cart(cls, user, requested_items, products):
+        """Resolve requested items against the catalogue and add matches to
+        the customer's cart, merging quantities into any existing line."""
+        by_name = {p.name.lower(): p for p in products}
+        added, unavailable = [], []
+        for entry in list(requested_items)[:20]:
+            raw_name = str(entry.get('product_name', '')).strip()
+            if not raw_name:
+                continue
+            try:
+                quantity = max(1, min(50, int(entry.get('quantity') or 1)))
+            except (TypeError, ValueError):
+                quantity = 1
+
+            product = cls.match_product(raw_name.lower(), products, by_name)
+            if product is None:
+                unavailable.append({'requested': raw_name, 'reason': 'not found in the catalogue'})
+                continue
+            if product.stock_quantity <= 0:
+                unavailable.append({'requested': product.name, 'reason': 'out of stock'})
+                continue
+
+            quantity = min(quantity, product.stock_quantity)
+            item, created = CartItem.objects.get_or_create(
+                user=user, product=product, defaults={'quantity': quantity},
+            )
+            if not created:
+                item.quantity += quantity
+                item.save(update_fields=['quantity', 'updated_at'])
+            added.append({
+                'product_id': product.id,
+                'name': product.name,
+                'quantity': quantity,
+                'subtotal': str(item.subtotal),
+            })
+        return added, unavailable
+
+    @staticmethod
+    def cart_confirmation_message(added, unavailable):
+        parts = []
+        if added:
+            listing = ', '.join(f"{item['quantity']} x {item['name']}" for item in added)
+            parts.append(f"I've added {listing} to your cart.")
+        if unavailable:
+            listing = ', '.join(f"{item['requested']} ({item['reason']})" for item in unavailable)
+            parts.append(f"I could not add: {listing}.")
+        if added:
+            parts.append('Taking you to your cart to review it and complete payment.')
+        return ' '.join(parts) or 'I could not find any of those items in the current catalogue.'
+
+    @staticmethod
+    def parse_shopping_list(message, products):
+        """Best-effort '<qty> <product>' extraction for when the AI provider
+        is unreachable, so listing items to buy still works without it."""
+        text = message.lower()
+        if not any(word in text for word in ('cart', 'buy', 'want', 'purchase', 'get me')):
+            return []
+        requested = []
+        for segment in re.split(r',| and ', text):
+            segment = segment.strip()
+            if not segment:
+                continue
+            match = re.match(r'(\d+)\s*(?:x\s*)?(.+)', segment)
+            quantity, name = (int(match.group(1)), match.group(2)) if match else (1, segment)
+            name = re.sub(r'^(?:a|an|some|of|to my cart|to cart)\b\s*', '', name.strip()).strip()
+            name = re.sub(r'\b(?:to my cart|to the cart|to cart)$', '', name).strip()
+            if name and any(name in p.name.lower() or p.name.lower() in name for p in products):
+                requested.append({'product_name': name, 'quantity': quantity})
+        return requested
 
     @staticmethod
     def catalogue_fallback(message, products, recent_orders):
@@ -109,10 +230,13 @@ class ShoppingAssistantView(APIView):
                 'status. Never invent products, prices, payment confirmation, delivery status, '
                 'or policies. All catalogue prices are USD. Be friendly and concise. If human '
                 'help is needed, direct the customer to WhatsApp or phone +263 77 291 0496. '
-                'Do not claim you placed an order or changed an account.\n\n'
+                'Do not claim you placed an order or changed an account. When the customer '
+                "lists items they want to buy, call add_to_cart with those items instead of "
+                'just describing them in text.\n\n'
                 f'CURRENT CATALOGUE:\n{catalogue}\n\nCUSTOMER ORDERS:\n{orders}'
             ),
             'input': prior,
+            'tools': [ADD_TO_CART_TOOL],
             'max_output_tokens': 500,
         }
         api_request = request.Request(
@@ -128,9 +252,42 @@ class ShoppingAssistantView(APIView):
             with request.urlopen(api_request, timeout=35) as api_response:
                 result = json.loads(api_response.read().decode('utf-8'))
         except (error.HTTPError, error.URLError, TimeoutError, json.JSONDecodeError):
+            requested = self.parse_shopping_list(message, products)
+            if requested:
+                added, unavailable = self.add_items_to_cart(request_obj.user, requested, products)
+                if added:
+                    return Response({
+                        'answer': self.cart_confirmation_message(added, unavailable),
+                        'cart_items_added': added,
+                        'unavailable_items': unavailable,
+                        'redirect_to_cart': True,
+                        'mode': 'catalogue',
+                    })
             return Response({
                 'answer': self.catalogue_fallback(message, products, recent_orders),
                 'mode': 'catalogue',
+            })
+
+        tool_call = next(
+            (
+                output for output in result.get('output', [])
+                if output.get('type') == 'function_call' and output.get('name') == 'add_to_cart'
+            ),
+            None,
+        )
+        if tool_call is not None:
+            try:
+                arguments = json.loads(tool_call.get('arguments') or '{}')
+            except json.JSONDecodeError:
+                arguments = {}
+            added, unavailable = self.add_items_to_cart(
+                request_obj.user, arguments.get('items') or [], products,
+            )
+            return Response({
+                'answer': self.cart_confirmation_message(added, unavailable),
+                'cart_items_added': added,
+                'unavailable_items': unavailable,
+                'redirect_to_cart': bool(added),
             })
 
         answer = result.get('output_text')

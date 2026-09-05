@@ -5,9 +5,18 @@ from urllib import error
 from django.test import TestCase
 from rest_framework.test import APIClient
 
+from apps.cart.models import CartItem
 from apps.factories import create_order, create_product, create_user
 
 CHAT_URL = '/api/v1/ai/chat/'
+
+
+def function_call_response(name, arguments, call_id='call_1'):
+    return {
+        'output': [
+            {'type': 'function_call', 'call_id': call_id, 'name': name, 'arguments': json.dumps(arguments)},
+        ],
+    }
 
 
 def openai_response(payload):
@@ -132,3 +141,87 @@ class ShoppingAssistantViewTests(TestCase):
         sent = json.loads(self.urlopen.call_args.args[0].data.decode())
         self.assertEqual(len(sent['input']), 7)
         self.assertEqual(sent['input'][0]['content'], 'question 4')
+
+    def test_prompt_offers_the_add_to_cart_tool(self):
+        self._post({'message': 'Do you sell maize meal?'}, {'output_text': 'Yes, we do.'})
+
+        sent = json.loads(self.urlopen.call_args.args[0].data.decode())
+        self.assertEqual(sent['tools'][0]['name'], 'add_to_cart')
+
+    def test_tool_call_adds_matching_items_to_the_cart_and_flags_redirect(self):
+        api_result = function_call_response('add_to_cart', {
+            'items': [{'product_name': 'Maize Meal', 'quantity': 2}],
+        })
+
+        response = self._post({'message': 'I want 2 maize meal'}, api_result)
+
+        self.assertTrue(response.data['redirect_to_cart'])
+        self.assertEqual(response.data['cart_items_added'], [{
+            'product_id': self.product.id, 'name': 'Maize Meal', 'quantity': 2, 'subtotal': '9.00',
+        }])
+        self.assertIn('Maize Meal', response.data['answer'])
+        item = CartItem.objects.get(user=self.user, product=self.product)
+        self.assertEqual(item.quantity, 2)
+
+    def test_tool_call_merges_quantity_into_an_existing_cart_line(self):
+        CartItem.objects.create(user=self.user, product=self.product, quantity=1)
+        api_result = function_call_response('add_to_cart', {
+            'items': [{'product_name': 'maize meal', 'quantity': 3}],
+        })
+
+        self._post({'message': 'add 3 more maize meal'}, api_result)
+
+        item = CartItem.objects.get(user=self.user, product=self.product)
+        self.assertEqual(item.quantity, 4)
+
+    def test_tool_call_reports_items_not_in_the_catalogue(self):
+        api_result = function_call_response('add_to_cart', {
+            'items': [{'product_name': 'Unicorn Tears', 'quantity': 1}],
+        })
+
+        response = self._post({'message': 'I want unicorn tears'}, api_result)
+
+        self.assertFalse(response.data['redirect_to_cart'])
+        self.assertEqual(response.data['cart_items_added'], [])
+        self.assertEqual(response.data['unavailable_items'], [
+            {'requested': 'Unicorn Tears', 'reason': 'not found in the catalogue'},
+        ])
+
+    def test_tool_call_skips_out_of_stock_products(self):
+        sold_out = create_product(category=self.product.category, name='Cooking Oil', price='6.00', stock_quantity=0)
+        api_result = function_call_response('add_to_cart', {
+            'items': [{'product_name': 'Cooking Oil', 'quantity': 1}],
+        })
+
+        response = self._post({'message': 'I want cooking oil'}, api_result)
+
+        self.assertEqual(response.data['cart_items_added'], [])
+        self.assertEqual(response.data['unavailable_items'], [
+            {'requested': sold_out.name, 'reason': 'out of stock'},
+        ])
+        self.assertFalse(CartItem.objects.filter(user=self.user, product=sold_out).exists())
+
+    def test_tool_call_clamps_quantity_to_available_stock(self):
+        api_result = function_call_response('add_to_cart', {
+            'items': [{'product_name': 'Maize Meal', 'quantity': 999}],
+        })
+
+        response = self._post({'message': 'I want a lot of maize meal'}, api_result)
+
+        self.assertEqual(response.data['cart_items_added'][0]['quantity'], self.product.stock_quantity)
+
+    def test_provider_error_with_a_shopping_list_still_adds_to_the_cart(self):
+        response = self._post(
+            {'message': 'I want to buy maize meal for my cart'},
+            side_effect=error.URLError('offline'),
+        )
+
+        self.assertEqual(response.data['mode'], 'catalogue')
+        self.assertTrue(response.data['redirect_to_cart'])
+        self.assertEqual(CartItem.objects.get(user=self.user, product=self.product).quantity, 1)
+
+    def test_provider_error_without_shopping_intent_uses_the_plain_fallback(self):
+        response = self._post({'message': 'Do you sell maize meal?'}, side_effect=error.URLError('offline'))
+
+        self.assertNotIn('cart_items_added', response.data)
+        self.assertEqual(response.data['mode'], 'catalogue')
