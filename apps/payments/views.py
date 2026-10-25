@@ -104,9 +104,9 @@ class PaymentStatusView(APIView):
         if not order:
             return not_found('Order not found.')
         if order.payment_status == 'paid':
-            return Response({'paid': True, 'status': 'paid'})
+            return Response({'paid': True, 'status': 'paid', 'reference': order.paynow_reference})
         if not order.paynow_poll_url:
-            return Response({'paid': False, 'status': order.payment_status})
+            return Response({'paid': False, 'status': order.payment_status, 'reference': ''})
         try:
             payment_status = gateway().check_transaction_status(order.paynow_poll_url)
         except Exception as exc:
@@ -116,7 +116,11 @@ class PaymentStatusView(APIView):
             order.status = Order.Status.PAID
             order.paynow_reference = getattr(payment_status, 'paynow_reference', '') or ''
             order.save(update_fields=['payment_status', 'status', 'paynow_reference', 'updated_at'])
-        return Response({'paid': bool(payment_status.paid), 'status': payment_status.status})
+        return Response({
+            'paid': bool(payment_status.paid),
+            'status': payment_status.status,
+            'reference': order.paynow_reference,
+        })
 
 
 class PaymentCallbackView(APIView):
